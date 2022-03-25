@@ -1,9 +1,9 @@
 CXX=g++-9
 CXXFLAGS=-Wall -MMD -std=c++11 -fopenmp -I../../lib -I../../src/ -I../../
 
-EXECUTABLE = ../../bin/run
+EXECUTABLE = ../../bin/svgToPoly
 
-SOURCES    = main.cpp
+SOURCES = svgToPoly.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
 

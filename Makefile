@@ -1,15 +1,23 @@
 SHELL := /bin/bash -e
-LIBS = Quaternion
+LIBS =
 
-all: sdfGen main
+all: main
 
-sdfGen:
-	cd projects/sdfGen; make
+svgToPoly:
+	cd projects/svgToPoly; make
+
+polyToSDF:
+	cd projects/polyToSDF; make
 
 main:
 	cd projects/main; make
 
+interactive:
+	cd projects/interactive; make
+
 clean:
 	@-for d in $(LIBS); do (echo -e "cd ./lib/$$d; rm *.o";cd ./lib/$$d; rm *.o; cd ../..); done
-	cd projects/sdfGen; make clean
 	cd projects/main; make clean
+	cd projects/interactive; make clean
+	cd projects/polyToSDF; make clean
+	cd projects/svgToPoly; make clean

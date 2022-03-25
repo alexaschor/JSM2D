@@ -1,8 +1,10 @@
 #ifndef FIELD_H
 #define FIELD_H
 
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <unordered_map>
 #include <queue>
 
@@ -10,89 +12,95 @@
 
 using namespace std;
 
-class AABB: public AlignedBox<Real, 3> {
+class AABB_2D: public AlignedBox<Real, 2> {
 public:
-    using AlignedBox<Real, 3>::AlignedBox;
-    AABB(VEC3F c1, VEC3F c2): AlignedBox<Real, 3>(c1.cwiseMin(c2), c1.cwiseMax(c2)) {}
-    AABB(): AABB(VEC3F(0,0,0), VEC3F(0,0,0)){}
+    using AlignedBox<Real, 2>::AlignedBox;
+    AABB_2D(VEC2F c1, VEC2F c2): AlignedBox<Real, 2>(c1.cwiseMin(c2), c1.cwiseMax(c2)) {}
+    AABB_2D(): AABB_2D(VEC2F(0,0), VEC2F(0,0)){}
 
-    VEC3F span() const {
+    VEC2F span() const {
         return max()-min();
     }
 
-    VEC3F clamp(VEC3F pos) const {
+    VEC2F clamp(VEC2F pos) const {
         return pos.cwiseMax(min()).cwiseMin(max());
     }
 
-    void setCenter(VEC3F newCenter) {
-        VEC3F offset = newCenter - this->center();
+    void setCenter(VEC2F newCenter) {
+        VEC2F offset = newCenter - this->center();
         max() += offset;
         min() += offset;
     }
 };
 
-class FieldFunction3D {
+class FieldFunction2D {
 private:
-    Real (*fieldFunction)(VEC3F pos);
+    Real (*fieldFunction)(VEC2F pos);
 public:
-    FieldFunction3D(Real (*fieldFunction)(VEC3F pos)):fieldFunction(fieldFunction) {}
+    FieldFunction2D(Real (*fieldFunction)(VEC2F pos)):fieldFunction(fieldFunction) {}
 
-    FieldFunction3D():fieldFunction(nullptr) {} // Only to be used by subclasses
+    FieldFunction2D():fieldFunction(nullptr) {} // Only to be used by subclasses
 
-    virtual Real getFieldValue(const VEC3F& pos) const {
+    virtual Real getFieldValue(const VEC2F& pos) const {
         return fieldFunction(pos);
     }
 
-    virtual Real operator()(const VEC3F& pos) const {
+    virtual Real operator()(const VEC2F& pos) const {
         return getFieldValue(pos);
     }
 };
 
-class Grid3D: public FieldFunction3D {
+class Grid2D: public FieldFunction2D {
 public:
-    uint xRes, yRes, zRes;
+    uint xRes, yRes;
     bool supportsNonIntegerIndices = false;
 
     // Bounds (aka center + lengths) for mapping into this grid
     // as a field function
-    AABB mapBox;
+    AABB_2D mapBox;
     bool hasMapBox = false;
 
     virtual uint totalCells() const {
-        return xRes * yRes * zRes;
+        return xRes * yRes;
     }
 
-    virtual Real get(uint x, uint y, uint z) const = 0;
+    virtual Real get(uint x, uint y) const = 0;
 
-    virtual Real getf(Real x, Real y, Real z) const {
-        (void) x; (void) y; (void) z; // Suppress unused argument warning
+    virtual Real operator[](size_t x) { // Access as C-style array;
+        uint Cx = (x % yRes);
+        uint Cy = (x - Cx)/yRes;
+        return get(Cx, Cy);
+    }
+
+    virtual Real getf(Real x, Real y) const {
+        (void) x; (void) y; // Suppress unused argument warning
         printf("This grid doesn't support non-integer indices!\n");
         exit(1);
     }
 
-    virtual Real get(VEC3I pos) const {
-        return get(pos[0], pos[1], pos[2]);
+    virtual Real get(VEC2I pos) const {
+        return get(pos[0], pos[1]);
     }
 
-    virtual Real getf(VEC3F pos) const {
-        return getf(pos[0], pos[1], pos[2]);
+    virtual Real getf(VEC2F pos) const {
+        return getf(pos[0], pos[1]);
     }
 
-    virtual void setMapBox(AABB box) {
+    virtual void setMapBox(AABB_2D box) {
         mapBox = box;
         hasMapBox = true;
     }
 
-    virtual Real getFieldValue(const VEC3F& pos) const override {
+    virtual Real getFieldValue(const VEC2F& pos) const override {
         if (!hasMapBox) {
             printf("Attempting getFieldValue on a Grid without a mapBox!\n");
             exit(1);
         }
 
-        VEC3F samplePoint = (pos - mapBox.min()).cwiseQuotient(mapBox.span());
-        samplePoint = samplePoint.cwiseMax(VEC3F(0,0,0)).cwiseMin(VEC3F(1,1,1));
+        VEC2F samplePoint = (pos - mapBox.min()).cwiseQuotient(mapBox.span());
+        samplePoint = samplePoint.cwiseMax(VEC2F(0,0)).cwiseMin(VEC2F(1,1));
 
-        const VEC3F indices = samplePoint.cwiseProduct(VEC3F(xRes-1, yRes-1, zRes-1));
+        const VEC2F indices = samplePoint.cwiseProduct(VEC2F(xRes-1, yRes-1));
 
         if (supportsNonIntegerIndices) {
             return getf(indices);
@@ -109,69 +117,117 @@ public:
 
         for (uint i = 0; i < xRes; ++i) {
             for (uint j = 0; j < yRes; ++j) {
-                for (uint k = 0; k < zRes; ++k) {
-                    out << i << ", " << j << ", " << k << ", " << get(i, j, k) << endl;
-                }
+                out << i << ", " << j << ", " << get(i, j) << endl;
             }
         }
 
-        printf("Wrote %d x %d x % d field (%d values) to %s\n", xRes, yRes, zRes, (xRes * yRes * zRes), filename.c_str());
+        printf("Wrote %d x %d field (%d values) to %s\n", xRes, yRes, (xRes * yRes), filename.c_str());
 
         out.close();
-
     }
 
-    // Writes to F3D file using the field bounds if the field has them, otherwise using
+    void writePPM(const string& filename, bool verbose=false) {
+        int totalCells = xRes * yRes;
+
+        Real min = numeric_limits<Real>::max();
+        Real max = -min;
+
+        Real* values = new Real[3 * totalCells];
+        PB_DECL();
+        if (verbose) PB_STARTD("Fetching values for PPM write");
+#pragma omp parallel for
+        for(uint y=0; y<yRes; ++y) {
+            for(uint x=0; x<xRes; ++x) {
+                int idx = ((y*xRes) + x) * 3;
+
+                Real val = get(x,y);
+
+                values[idx] = val;
+                values[idx + 1] = val;
+                values[idx + 2] = val;
+
+                if (val < min) min = val;
+                if (val > max) max = val;
+            }
+            if (verbose && y%30==0) PB_PROGRESS((float)y / yRes);
+        }
+        if (verbose) PB_END();
+
+        unsigned char* pixels = new unsigned char[3 * totalCells];
+#pragma omp parallel for
+        for(uint y=0; y<yRes; ++y) {
+            for(uint x=0; x<xRes; ++x) {
+                int idx = ((y*xRes) + x) * 3;
+                Real val = 255 * ((values[idx] - min) / (max - min));
+
+                pixels[idx] = val;
+                pixels[idx + 1] = val;
+                pixels[idx + 2] = val;
+            }
+        }
+
+        FILE *fp;
+        fp = fopen(filename.c_str(), "wb");
+        if (fp == NULL) {
+            PRINTF("Could not open file '%s' for PPM write!", filename.c_str());
+            exit(1);
+        }
+
+        fprintf(fp, "P6\n%d %d\n255\n", xRes, yRes);
+        fwrite(pixels, 1, totalCells * 3, fp);
+        fclose(fp);
+        delete[] pixels;
+
+        printf("Wrote %d x %d field (%d values) to %s\n", xRes, yRes, (xRes * yRes), filename.c_str());
+    }
+
+    // Writes to F2D file using the field bounds if the field has them, otherwise using
     // the resolution ofthe grid.
-    void writeF3D(string filename, bool verbose = false) const {
+    void writeF2D(string filename, bool verbose = false) const {
         if (hasMapBox) {
-            writeF3D(filename, mapBox, verbose);
+            writeF2D(filename, mapBox, verbose);
         } else {
-            writeF3D(filename, AABB(VEC3F(0,0,0), VEC3F(xRes, yRes, zRes)), verbose);
+            writeF2D(filename, AABB_2D(VEC2F(0,0), VEC2F(xRes, yRes)), verbose);
         }
     }
 
-    void writeF3D(string filename, AABB bounds, bool verbose = false) const {
+    void writeF2D(string filename, AABB_2D bounds, bool verbose = false) const {
         FILE* file = fopen(filename.c_str(), "wb");
 
         if (file == NULL) {
-            PRINT("Failed to write F3D: file open failed!");
+            PRINT("Failed to write F2D: file open failed!");
             exit(0);
         }
 
         PB_DECL();
         if (verbose) {
-            PB_STARTD("Writing %dx%dx%d field to %s", xRes, yRes, zRes, filename.c_str());
+            PB_STARTD("Writing %dx%d field to %s", xRes, yRes, filename.c_str());
         }
 
         // write dimensions
         fwrite((void*)&xRes, sizeof(int), 1, file);
         fwrite((void*)&yRes, sizeof(int), 1, file);
-        fwrite((void*)&zRes, sizeof(int), 1, file);
 
-        MyEigen::write_vec3f(file, bounds.center());
-        MyEigen::write_vec3f(file, bounds.span());
+        MyEigen::write_vec2f(file, bounds.center());
+        MyEigen::write_vec2f(file, bounds.span());
 
-        const int totalCells = xRes*yRes*zRes;
+        const int totalCells = xRes*yRes;
 
         if (totalCells <= 0)
             return;
 
         // write data
-        for (uint i = 0; i < xRes; ++i) {
-            for (uint j = 0; j < yRes; ++j) {
-                for (uint k = 0; k < zRes; ++k) {
-                    const Real val = get(i, j, k);
-                    double out;
-                    if (sizeof(Real) != sizeof(double)) {
-                        out = (double) val;
-                    } else {
-                        out = val;
-                    }
-
-                    fwrite((void*) (&out), sizeof(double), 1, file);
-
+        for (uint i = 0; i < yRes; ++i) {
+            for (uint j = 0; j < xRes; ++j) {
+                const Real val = get(j, i);
+                double out;
+                if (sizeof(Real) != sizeof(double)) {
+                    out = (double) val;
+                } else {
+                    out = val;
                 }
+
+                fwrite((void*) (&out), sizeof(double), 1, file);
             }
 
             if (verbose && i % 10 == 0) {
@@ -185,63 +241,69 @@ public:
     }
 };
 
-class ArrayGrid3D: public Grid3D {
+class ArrayGrid2D: public Grid2D {
 private:
     Real* values;
 public:
 
     // Create empty (not zeroed) field with given resolution
-    ArrayGrid3D(uint xRes, uint yRes, uint zRes) {
+    ArrayGrid2D(uint xRes, uint yRes) {
         this->xRes = xRes;
         this->yRes = yRes;
-        this->zRes = zRes;
-        values = new Real[xRes * yRes * zRes];
+        values = new Real[xRes * yRes];
     }
 
     // Create empty (not zeroed) field with given resolution
-    ArrayGrid3D(VEC3I resolution): ArrayGrid3D(resolution[0], resolution[1], resolution[2]) {}
+    ArrayGrid2D(VEC3I resolution): ArrayGrid2D(resolution[0], resolution[1]) {}
 
-    // Read ArrayGrid3D from F3D
-    ArrayGrid3D(string filename, string format = "f3d", bool verbose = false) {
+    // Create deep copy of another ArrayGrid2D
+    ArrayGrid2D(const ArrayGrid2D& other) {
+        this->xRes = other.xRes;
+        this->yRes = other.yRes;
 
-        if (format == "f3d") {
+        values = new Real[xRes * yRes];
+        memcpy(values, other.values, xRes * yRes * sizeof(Real));
+    }
+
+    // Read ArrayGrid2D from F2D
+    ArrayGrid2D(string filename, string format = "f2d", bool verbose = false) {
+
+        if (format == "f2d") {
             FILE* file = fopen(filename.c_str(), "rb");
             if (file == NULL) {
-                PRINT("Failed to read F3D: file open failed!");
+                PRINT("Failed to read F2D: file open failed!");
                 exit(0);
             }
 
-            int xRes, yRes, zRes;
-            VEC3F center, lengths;
+            int xRes, yRes;
+            VEC2F center, lengths;
 
             // read dimensions
             fread((void*)&xRes, sizeof(int), 1, file);
             fread((void*)&yRes, sizeof(int), 1, file);
-            fread((void*)&zRes, sizeof(int), 1, file);
 
-            MyEigen::read_vec3f(file, center);
-            MyEigen::read_vec3f(file, lengths);
+            MyEigen::read_vec2f(file, center);
+            MyEigen::read_vec2f(file, lengths);
 
             this->xRes = xRes;
             this->yRes = yRes;
-            this->zRes = zRes;
 
             try {
-                values = new Real[xRes * yRes * zRes];
+                values = new Real[xRes * yRes];
             } catch(bad_alloc& exc) {
-                printf("Failed to allocate %.2f MB for ArrayGrid3D read from file!\n", (xRes * yRes * zRes * sizeof(Real)) / pow(2.0,20.0));
+                printf("Failed to allocate %.2f MB for ArrayGrid2D read from file!\n", (xRes * yRes * sizeof(Real)) / pow(2.0,20.0));
                 exit(0);
             }
 
             if (verbose) {
-                printf("Reading %d x %d x %d field from %s... ", xRes, yRes, zRes, filename.c_str());
+                printf("Reading %d x %d field from %s... ", xRes, yRes, filename.c_str());
                 fflush(stdout);
             }
 
-            AABB bounds((center - lengths/2), (center + lengths/2));
+            AABB_2D bounds((center - lengths/2), (center + lengths/2));
             setMapBox(bounds);
 
-            const int totalCells = xRes * yRes * zRes;
+            const int totalCells = xRes * yRes;
             // always read in as a double
             if (sizeof(Real) != sizeof(double)) {
                 double* dataDouble = new double[totalCells];
@@ -250,14 +312,8 @@ public:
                 for (int x = 0; x < totalCells; x++)
                     values[x] = dataDouble[x];
 
-                if (verbose) printf("\n");
-
                 delete[] dataDouble;
             } else fread((void*)values, sizeof(Real), totalCells, file);
-
-            if (verbose) {
-                printf("done.\n");
-            }
 
         } else {
             PRINT("CSV import not implemented yet!");
@@ -266,64 +322,98 @@ public:
 
     }
     // Destructor
-    ~ArrayGrid3D() {
+    virtual ~ArrayGrid2D() {
         delete values;
     }
 
     // Access value based on integer indices
-    Real get(uint x, uint y, uint z) const override {
-        return values[(z * yRes + y) * xRes + x];
+    Real get(uint x, uint y) const override {
+        return values[y * xRes + x];
     }
 
     // Access value directly (allows setting)
-    Real& at(uint x, uint y, uint z) {
-        return values[(z * yRes + y) * xRes + x];
+    Real& at(uint x, uint y) {
+        return values[y * xRes + x];
     }
 
-    Real& atFieldPos(VEC3F pos) {
+    // Access value directly in C-style array (allows setting)
+    Real& at(size_t x) {
+        return values[x];
+    }
+
+    Real& atFieldPos(VEC2F pos) {
         if (!hasMapBox) {
             printf("Attempting atFieldPos on an ArrayGrid without a mapBox!\n");
             exit(1);
         }
 
-        VEC3F samplePoint = (pos - mapBox.min()).cwiseQuotient(mapBox.span());
-        samplePoint = samplePoint.cwiseMax(VEC3F(0,0,0)).cwiseMin(VEC3F(1,1,1));
+        VEC2F samplePoint = (pos - mapBox.min()).cwiseQuotient(mapBox.span());
+        samplePoint = samplePoint.cwiseMax(VEC2F(0,0)).cwiseMin(VEC2F(1,1));
 
-        const VEC3F indices = samplePoint.cwiseProduct(VEC3F(xRes-1, yRes-1, zRes-1));
+        const VEC2F indices = samplePoint.cwiseProduct(VEC2F(xRes-1, yRes-1));
 
-        return at(indices[0], indices[1], indices[2]);
+        return at(indices[0], indices[1]);
     }
 
-    Real& atFieldPos(Real x, Real y, Real z) {
-        return atFieldPos(VEC3F(x,y,z));
+    Real& atFieldPos(Real x, Real y) {
+        return atFieldPos(VEC2F(x,y));
     }
 
 
-    Real& operator()(VEC3F pos) {
+    Real& operator()(VEC2F pos) {
         return atFieldPos(pos);
     }
 
-    // Access value directly in C-style array (allows setting)
-    Real& operator[](size_t x) {
-        return values[x];
+    void operator+=(Real x){
+        for (unsigned i = 0; i < (xRes*yRes); ++i) {
+            values[i] += x;
+        }
     }
 
+    void operator-=(Real x){
+        for (unsigned i = 0; i < (xRes*yRes); ++i) {
+            values[i] -= x;
+        }
+    }
+
+    void operator*=(Real x){
+        for (unsigned i = 0; i < (xRes*yRes); ++i) {
+            values[i] *= x;
+        }
+    }
+
+    void operator/=(Real x){
+        for (unsigned i = 0; i < (xRes*yRes); ++i) {
+            values[i] /= x;
+        }
+    }
+
+    void abs(){
+        for (unsigned i = 0; i < (xRes*yRes); ++i) {
+            values[i] = ::abs(values[i]);
+        }
+    }
+
+    void log(Real x){
+        for (unsigned i = 0; i < (xRes*yRes); ++i) {
+            values[i] = ::log(values[i]) / ::log(x);
+        }
+    }
 
     // Create field from scalar function by sampling it on a regular grid
-    ArrayGrid3D(uint xRes, uint yRes, uint zRes, VEC3F functionMin, VEC3F functionMax, FieldFunction3D *fieldFunction):ArrayGrid3D(xRes, yRes, zRes){
+    ArrayGrid2D(uint xRes, uint yRes, VEC2F functionMin, VEC2F functionMax, FieldFunction2D *function):ArrayGrid2D(xRes, yRes){
 
-        VEC3F gridResF(xRes, yRes, zRes);
+        VEC2F gridResF(xRes, yRes);
 
+#pragma omp parallel for
         for (uint i = 0; i < xRes; i++) {
             for (uint j = 0; j < yRes; j++) {
-                for (uint k = 0; k < zRes; k++) {
-                    VEC3F gridPointF(i, j, k);
-                    VEC3F fieldDelta = functionMax - functionMin;
+                VEC2F gridPointF(i, j);
+                VEC2F fieldDelta = functionMax - functionMin;
 
-                    VEC3F samplePoint = functionMin + (gridPointF.cwiseQuotient(gridResF - VEC3F(1,1,1)).cwiseProduct(fieldDelta));
+                VEC2F samplePoint = functionMin + (gridPointF.cwiseQuotient(gridResF - VEC2F(1,1)).cwiseProduct(fieldDelta));
 
-                    this->at(i, j, k) = fieldFunction->getFieldValue(samplePoint);
-                }
+                this->at(i, j) = function->getFieldValue(samplePoint);
             }
         }
 
@@ -332,45 +422,44 @@ public:
 
 };
 
-class VirtualGrid3D: public Grid3D {
+class VirtualGrid2D: public Grid2D {
 private:
-    FieldFunction3D *fieldFunction;
-    VEC3F functionMin, functionMax;
+    FieldFunction2D *fieldFunction;
+    VEC2F functionMin, functionMax;
 
-    VEC3F getSamplePoint(Real x, Real y, Real z) const {
-        VEC3F gridPointF(x, y, z);
-        VEC3F gridResF(xRes, yRes, zRes);
-        VEC3F fieldDelta = functionMax - functionMin;
-        VEC3F samplePoint = functionMin + (gridPointF.cwiseQuotient(gridResF - VEC3F(1,1,1)).cwiseProduct(fieldDelta));
+    VEC2F getSamplePoint(Real x, Real y) const {
+        VEC2F gridPointF(x, y);
+        VEC2F gridResF(xRes, yRes);
+        VEC2F fieldDelta = functionMax - functionMin;
+        VEC2F samplePoint = functionMin + (gridPointF.cwiseQuotient(gridResF - VEC2F(1,1)).cwiseProduct(fieldDelta));
 
         return samplePoint;
     }
 public:
 
-    VirtualGrid3D(uint xRes, uint yRes, uint zRes, VEC3F functionMin, VEC3F functionMax,  FieldFunction3D *fieldFunction):
+    VirtualGrid2D(uint xRes, uint yRes, VEC2F functionMin, VEC2F functionMax, FieldFunction2D *fieldFunction):
         fieldFunction(fieldFunction),
         functionMin(functionMin),
         functionMax(functionMax) {
             this->xRes = xRes;
             this->yRes = yRes;
-            this->zRes = zRes;
 
-            this->setMapBox(AABB(functionMin, functionMax));
+            this->setMapBox(AABB_2D(functionMin, functionMax));
 
             this->supportsNonIntegerIndices = true;
         }
 
     // Virtually (shallow) downsample an existing grid
-    // VirtualGrid3D(uint xRes, uint yRes, uint zRes, Grid3D *other) {
+    // VirtualGrid2D(uint xRes, uint yRes, uint zRes, Grid2D *other) {
     // TODO implement
     // }
 
-    virtual Real get(uint x, uint y, uint z) const override {
-        return getf(x, y, z);
+    virtual Real get(uint x, uint y) const override {
+        return getf(x, y);
     }
 
-    virtual Real getf(Real x, Real y, Real z) const override {
-        return fieldFunction->getFieldValue(getSamplePoint(x, y, z));
+    virtual Real getf(Real x, Real y) const override {
+        return fieldFunction->getFieldValue(getSamplePoint(x, y));
     }
 };
 
@@ -391,23 +480,23 @@ template<typename T> struct matrix_hash : unary_function<T, size_t> {
 };
 
 
-class VirtualGrid3DCached: public VirtualGrid3D {
+class VirtualGrid2DCached: public VirtualGrid2D {
 protected:
-    mutable unordered_map<VEC3F, Real, matrix_hash<VEC3F>> map;
+    mutable unordered_map<VEC2F, Real, matrix_hash<VEC2F>> map;
 
 public:
     mutable int numQueries = 0;
     mutable int numHits = 0;
     mutable int numMisses = 0;
 
-    using VirtualGrid3D::VirtualGrid3D;
+    using VirtualGrid2D::VirtualGrid2D;
 
-    virtual Real get(uint x, uint y, uint z) const override {
-        return getf(x,y,z);
+    virtual Real get(uint x, uint y) const override {
+        return getf(x,y);
     }
 
-    virtual Real getf(Real x, Real y, Real z) const override {
-        VEC3F key(x,y,z);
+    virtual Real getf(Real x, Real y) const override {
+        VEC2F key(x,y);
         numQueries++;
 
         auto search = map.find(key);
@@ -416,7 +505,7 @@ public:
             return search->second;
         }
 
-        Real result = VirtualGrid3D::get(x,y,z);
+        Real result = VirtualGrid2D::get(x,y);
         map[key] = result;
         numMisses++;
         return result;
@@ -424,34 +513,34 @@ public:
 
 };
 
-class VirtualGrid3DLimitedCache: public VirtualGrid3DCached {
+class VirtualGrid2DLimitedCache: public VirtualGrid2DCached {
 private:
     size_t maxSize;
-    mutable queue<VEC3F> cacheQueue;
+    mutable queue<VEC2F> cacheQueue;
 
 public:
-    // Instantiates a VirtualGrid3D with a limited-size cache. When additional
+    // Instantiates a VirtualGrid2D with a limited-size cache. When additional
     // items are inserted into the cache (beyond the capacity), the cache will
     // forget the item that was least recently inserted. If capacity -1 is
-    // specified (default), it defaults to a size equal to three XY slices
-    // through the field, which is suited for marching cubes.
-    VirtualGrid3DLimitedCache(uint xRes, uint yRes, uint zRes, VEC3F functionMin, VEC3F functionMax,  FieldFunction3D *fieldFunction, int capacity = -1):
-        VirtualGrid3DCached(xRes, yRes, zRes, functionMin, functionMax, fieldFunction) {
-            PRINTV3(functionMin);
-            PRINTV3(functionMax);
+    // specified (default), it defaults to a size equal to three Y slices
+    // through the field.
+    VirtualGrid2DLimitedCache(uint xRes, uint yRes, VEC2F functionMin, VEC2F functionMax,  FieldFunction2D *fieldFunction, int capacity = -1):
+        VirtualGrid2DCached(xRes, yRes, functionMin, functionMax, fieldFunction) {
+            PRINTV2(functionMin);
+            PRINTV2(functionMax);
             if (capacity == -1) {
-                maxSize = xRes * yRes * 3;
+                maxSize = xRes * 3;
             } else {
                 maxSize = capacity;
             }
         }
 
-    virtual Real get(uint x, uint y, uint z) const override {
-        return getf(x,y,z);
+    virtual Real get(uint x, uint y) const override {
+        return getf(x,y);
     }
 
-    virtual Real getf(Real x, Real y, Real z) const override {
-        VEC3F key(x,y,z);
+    virtual Real getf(Real x, Real y) const override {
+        VEC2F key(x,y);
         numQueries++;
 
         auto search = map.find(key);
@@ -460,7 +549,7 @@ public:
             return search->second;
         }
 
-        Real result = VirtualGrid3D::getf(x,y,z);
+        Real result = VirtualGrid2D::getf(x,y);
         map[key] = result;
 
         if (cacheQueue.size() >= maxSize) {
@@ -476,7 +565,7 @@ public:
 };
 
 
-class InterpolationGrid: public Grid3D {
+class InterpolationGrid2D: public Grid2D {
 private:
     Real interpolate(Real x0, Real x1, Real d) const {
         switch (mode) {
@@ -492,7 +581,7 @@ private:
 
 
 public:
-    Grid3D* baseGrid;
+    Grid2D* baseGrid;
 
     enum INTERPOLATION_MODE {
         LINEAR,
@@ -501,72 +590,56 @@ public:
 
     INTERPOLATION_MODE mode;
 
-    InterpolationGrid(Grid3D* baseGrid, INTERPOLATION_MODE mode = LINEAR) {
+    InterpolationGrid2D(Grid2D* baseGrid, INTERPOLATION_MODE mode = LINEAR) {
         this->baseGrid = baseGrid;
         xRes = baseGrid->xRes;
         yRes = baseGrid->yRes;
-        zRes = baseGrid->zRes;
         this->mode = mode;
         this->supportsNonIntegerIndices = true;
 
         if (baseGrid->hasMapBox) this->setMapBox(baseGrid->mapBox);
 
         if (baseGrid->supportsNonIntegerIndices) {
-            PRINT("Warning: laying an InterpolationGrid over a grid which already supports non-integer indices!");
+            PRINT("Warning: laying an InterpolationGrid2D over a grid which already supports non-integer indices!");
         }
     }
 
-    virtual Real get(uint x, uint y, uint z) const override {
-        return baseGrid->get(x, y, z);
+    virtual Real get(uint x, uint y) const override {
+        return baseGrid->get(x, y);
     }
 
-    virtual Real getf(Real x, Real y, Real z) const override {
-        // "Trilinear" interpolation with whatever technique we select
+    virtual Real getf(Real x, Real y) const override {
+        // "Bilinear" interpolation with whatever technique we select
 
         uint x0 = floor(x);
         uint y0 = floor(y);
-        uint z0 = floor(z);
 
         uint x1 = x0 + 1;
         uint y1 = y0 + 1;
-        uint z1 = z0 + 1;
 
         // Clamp if out of bounds
         x0 = (x0 > xRes - 1) ? xRes - 1 : x0;
         y0 = (y0 > yRes - 1) ? yRes - 1 : y0;
-        z0 = (z0 > zRes - 1) ? zRes - 1 : z0;
 
         x1 = (x1 > xRes - 1) ? xRes - 1 : x1;
         y1 = (y1 > yRes - 1) ? yRes - 1 : y1;
-        z1 = (z1 > zRes - 1) ? zRes - 1 : z1;
 
 
         const Real xd = min(1.0, max(0.0, (x - x0) / ((Real) x1 - x0)));
         const Real yd = min(1.0, max(0.0, (y - y0) / ((Real) y1 - y0)));
-        const Real zd = min(1.0, max(0.0, (z - z0) / ((Real) z1 - z0)));
 
-        // First grab 3D surroundings...
-        const Real c000 = baseGrid->get(x0, y0, z0);
-        const Real c001 = baseGrid->get(x0, y0, z1);
-        const Real c010 = baseGrid->get(x0, y1, z0);
-        const Real c011 = baseGrid->get(x0, y1, z1);
-        const Real c100 = baseGrid->get(x1, y0, z0);
-        const Real c101 = baseGrid->get(x1, y0, z1);
-        const Real c110 = baseGrid->get(x1, y1, z0);
-        const Real c111 = baseGrid->get(x1, y1, z1);
-
-        // Now create 2D interpolated slice...
-        const Real c00 = interpolate(c000, c100, xd);
-        const Real c01 = interpolate(c001, c101, xd);
-        const Real c10 = interpolate(c010, c110, xd);
-        const Real c11 = interpolate(c011, c111, xd);
+        // First grab 2D surroundings...
+        const Real c00 = baseGrid->get(x0, y0);
+        const Real c01 = baseGrid->get(x0, y1);
+        const Real c10 = baseGrid->get(x1, y0);
+        const Real c11 = baseGrid->get(x1, y1);
 
         // Extract 1D interpolated line...
-        const Real c0 = interpolate(c00, c10, yd);
-        const Real c1 = interpolate(c01, c11, yd);
+        const Real c0 = interpolate(c00, c10, xd);
+        const Real c1 = interpolate(c01, c11, xd);
 
         // And grab 0D point.
-        const Real output = interpolate(c0, c1, zd);
+        const Real output = interpolate(c0, c1, yd);
 
         return output;
     }

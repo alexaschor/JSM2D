@@ -1,224 +1,243 @@
 #ifndef JULIA_H
 #define JULIA_H
 
-#include "mesh.h"
 #include "field.h"
-#include "Quaternion/QUATERNION.h"
-#include "Quaternion/POLYNOMIAL_4D.h"
+#include <complex>
+#include <limits>
+#include <random>
 
-class QuatToQuatFn {
+typedef std::complex<Real> COMPLEX;
+
+inline COMPLEX normalizedComplex(COMPLEX q){ return (q / (sqrt(real(q)*real(q) + imag(q)*imag(q)))); }
+inline Real complexMagnitude(COMPLEX q){ return sqrt(real(q)*real(q) + imag(q)*imag(q)); }
+
+class ComplexMap {
 public:
-    virtual QUATERNION getFieldValue(QUATERNION q) const = 0;
+    virtual COMPLEX getFieldValue(COMPLEX q) const = 0;
 
-    virtual QUATERNION operator()(QUATERNION q) const {
+    virtual COMPLEX operator()(COMPLEX q) const {
         return getFieldValue(q);
     }
 };
 
-class SimpleJuliaQuat: public QuatToQuatFn {
+class SimpleJuliaQuat: public ComplexMap {
 public:
-    QUATERNION c;
-    SimpleJuliaQuat(QUATERNION c): c(c) {}
+    COMPLEX c;
+    SimpleJuliaQuat(COMPLEX c): c(c) {}
 
-    virtual QUATERNION getFieldValue(QUATERNION q) const override {
+    virtual COMPLEX getFieldValue(COMPLEX q) const override {
         return (q * q) + c;
     }
 };
 
-class RationalQuatPoly: public QuatToQuatFn {
+class POLYNOMIAL_2D: public ComplexMap {
 public:
-    POLYNOMIAL_4D topPolynomial;
-    bool hasBottomPolynomial;
-    POLYNOMIAL_4D bottomPolynomial;
+    vector<COMPLEX> roots;
+    vector<Real> powers;
 
-    RationalQuatPoly(POLYNOMIAL_4D topPolynomial) : topPolynomial(topPolynomial), hasBottomPolynomial(false) {}
-    RationalQuatPoly(POLYNOMIAL_4D topPolynomial, POLYNOMIAL_4D bottomPolynomial) : topPolynomial(topPolynomial), hasBottomPolynomial(true), bottomPolynomial(bottomPolynomial) {}
+    static POLYNOMIAL_2D randPolynomialInBox(AABB_2D box, Real minPower, Real maxPower, uint nRoots, bool allowNonIntegerPowers = true) {
+        random_device rd;
+        default_random_engine eng(rd());
+        // default_random_engine eng(12321); // XXX For consistent results
 
-    virtual QUATERNION getFieldValue(QUATERNION q) const override {
-        QUATERNION out = topPolynomial.evaluateScaledPowerFactored(q);
-        if (hasBottomPolynomial) {
-            QUATERNION bottomEval = bottomPolynomial.evaluateScaledPowerFactored(q);
-            out = (out / bottomEval);
+        Real minX = box.min()[0];
+        Real minY = box.min()[1];
+
+        Real maxX = box.max()[0];
+        Real maxY = box.max()[1];
+
+        uniform_real_distribution<> spaceXD(minX, maxX);
+        uniform_real_distribution<> spaceYD(minY, maxY);
+
+        uniform_real_distribution<> powerD(minPower, maxPower);
+
+        vector<COMPLEX> roots{};
+        vector<Real> powers{};
+        for (uint i = 0; i < nRoots; ++i) {
+            roots.push_back(COMPLEX(spaceXD(eng), spaceYD(eng)));
+            powers.push_back( allowNonIntegerPowers? powerD(eng) : int(powerD(eng)) );
         }
-        return out;
+
+        POLYNOMIAL_2D poly(roots, powers);
+        return poly;
+    }
+
+    bool operator==(const POLYNOMIAL_2D& other) {
+        return (roots == other.roots && powers == other.powers); //XXX won't work for out of order duplicates
+    }
+
+
+
+    POLYNOMIAL_2D(){}
+
+    POLYNOMIAL_2D(vector<COMPLEX> roots, vector<Real> powers): roots(roots), powers(powers) {}
+
+    COMPLEX evaluate(COMPLEX q) const {
+        COMPLEX sum = 0;
+        for (unsigned i=0; i < roots.size(); ++i) {
+            sum += pow(q - roots[i], powers[i]);
+        }
+        return sum;
+    }
+
+    virtual COMPLEX getFieldValue(COMPLEX q) const override {
+        return evaluate(q);
+    }
+};
+
+class DistanceGuidedMap: public ComplexMap {
+public:
+    Grid2D* distanceField;
+    ComplexMap* p;
+
+    Real c;
+
+public:
+    DistanceGuidedMap(Grid2D* distanceField,  ComplexMap* p, Real c = 300):
+        distanceField(distanceField), p(p), c(c){}
+
+    virtual COMPLEX getFieldValue(COMPLEX q) const override {
+        VEC2F qV2(real(q), imag(q));
+
+        const Real distance = (*distanceField)(qV2);
+        Real radius = exp(c * distance);
+
+        // Evaluate polynomial
+        q = p->getFieldValue(q);
+        q = normalizedComplex(q) * radius;
+
+        return q;
     }
 
 };
 
-class DistanceGuidedQuatMap: public FieldFunction3D {
+class JuliaSet: public FieldFunction2D {
 public:
-    Grid3D* distanceField;
-    QuatToQuatFn* p;
-
-    Real c;
+    ComplexMap* map;
     int maxIterations;
     Real escape;
-    Real fitScale;
 
-    ArrayGrid3D* debugGrid;
+    typedef enum {
+        LOG_MAGNITUDE,
+        SET_MEMBERSHIP
+    } JuliaOutputMode;
 
-public:
-    DistanceGuidedQuatMap(Grid3D* distanceField,  QuatToQuatFn* p, Real c = 300, int maxIterations = 3, Real escape = 20, Real fitScale = 1):
-        distanceField(distanceField), p(p), c(c), maxIterations(maxIterations), escape(escape), fitScale(fitScale) {}
+    JuliaOutputMode mode = LOG_MAGNITUDE;
 
-    Real getFieldValue(const VEC3F& pos) const override {
-        QUATERNION iterate(pos[0], pos[1], pos[2], 0);
-        Real magnitude = iterate.magnitude();
-        int totalIterations = 0;
+    JuliaSet(ComplexMap* map, int maxIterations=3, Real escape=20): map(map), maxIterations(maxIterations), escape(escape) {}
+
+    virtual Real getFieldValue(const VEC2F& pos) const override {
+        COMPLEX iterate(pos[0], pos[1]);
+
+        iterate = map->getFieldValue(iterate);
+        Real magnitude = complexMagnitude(iterate);
+
+        int totalIterations = 1;
 
         while (magnitude < escape && totalIterations < maxIterations) {
-            // First lookup the radius we're going to project to and save the original
-            const Real distance = (*distanceField)(VEC3F(iterate[0], iterate[1], iterate[2]));
-            Real radius = exp(c * distance);
-
-            QUATERNION original = iterate;
-            VEC3F iterateV3(iterate[0], iterate[1], iterate[2]);
-
-            // If we know it'll escape we can skip quaternion multiplication evaluation (unless we're scaling)
-            if (fitScale == 1 && radius > escape) {
-                magnitude = radius;
-                totalIterations++;
-                break;
-            }
-
-            iterate = p->getFieldValue(iterate);
-
-            // If quaternion multiplication fails, revert back to original
-            if (iterate.anyNans()) {
-                if (debugGrid) (*debugGrid)(pos) = 2;
-                iterate = original;
-            }
-
-            // Try to normalize iterate, might produce infs or nans if magnitude
-            // is too small or zero if magnitude is too large
-            QUATERNION normedIterate = iterate;
-            normedIterate.normalize();
-
-            // Scale radius (accounting for fitScale)
-            // Fitscale is a scalar parameter to smoothly (ish) interpolate between the original P and
-            // the mapped version, unless you're doing that it should be always set to 1
-            radius = exp((1 - fitScale) * log(iterate.magnitude()) + (fitScale * log(radius)));
-
-            // Now that we know the radius we can break if it's too big:
-            if (radius > escape) {
-                if (debugGrid) (*debugGrid)(pos) = -1;
-                magnitude = radius;
-                totalIterations++;
-                break;
-            }
-
-            bool tooSmall = normedIterate.anyNans();
-            if (tooSmall) {
-                QUATERNION origNorm = original;
-                origNorm.normalize();
-                if (origNorm.anyNans()) {
-                    // Need to put it at radius but have no direction info
-                    iterate = QUATERNION(1,0,0,0) * radius;
-                    if (debugGrid) (*debugGrid)(pos) = 4;
-
-                    // This should never happen. If it does, your polynomial is
-                    // probably returing wayyy too large values that double
-                    // precision can't hold their inverse
-                } else {
-                    if (debugGrid) (*debugGrid)(pos) = 3;
-                    iterate = origNorm * radius;
-                }
-            } else {
-                iterate = normedIterate;
-                iterate *= radius;
-            }
-
-            magnitude = iterate.magnitude();
+            // Evaluate polynomial
+            iterate = map->getFieldValue(iterate);
+            magnitude = complexMagnitude(iterate);
 
             totalIterations++;
         }
 
-        return log(magnitude);
+        if (mode == LOG_MAGNITUDE) {
+            return log(magnitude);
+        }
+        return (magnitude < escape)? 1 : 0;
     }
+};
 
-    void sampleFit(string filename, int res, Real fitScale) {
-        ofstream out(filename);
 
-        VEC3F min = distanceField->mapBox.min();
-        VEC3F max = distanceField->mapBox.max();
-        VEC3F inc = distanceField->mapBox.span()/res;
+// =============== INSPECTION TOOLS =======================
 
-        PB_START("Sampling fit on %d x %d x %d grid...", res, res, res);
-        PB_PROGRESS(0);
+class ComplexMapRotField: public FieldFunction2D {
+public:
+    ComplexMap *func;
+    int i;
 
-        for (Real x = min[0]; x < max[0]; x+=inc[0]) {
-            for (Real y = min[1]; y < max[1]; y+=inc[1]) {
-                for (Real z = min[2]; z < max[2]; z+=inc[2]) {
-                    QUATERNION samplePoint(x, y, z, 0);
+    ComplexMapRotField(ComplexMap* func, int i): func(func), i(i) {}
 
-                    const Real distance = (*distanceField)(VEC3F(samplePoint[0], samplePoint[1], samplePoint[2]));
-                    const Real targetMag = exp( c * distance);
+    virtual Real getFieldValue(const VEC2F& pos) const override {
+        COMPLEX in(pos[0], pos[1]);
+        COMPLEX out = normalizedComplex(func->getFieldValue(in));
 
-                    bool nanOut = false;
-                    Real actualMag = p->getFieldValue(samplePoint).magnitude();
+        return (i==1)? real(out) : imag(out);
+    }
+};
 
-                    if (::isnan(actualMag)) {
-                        nanOut = true;
-                        actualMag = samplePoint.magnitude();
+class DistanceMapInspection {
+public:
+
+    static void sampleAttractingPercent(FieldFunction2D& ff, int gridRes, Real min, Real max, Real radDelta) {
+
+        PB_START("Sampling radii");
+
+        if (min == 0) min = radDelta;
+
+        for (Real rad = min; rad < max; rad += radDelta) {
+            uint numPts = 0, numAttracting = 0;
+
+            Real gridDelta = (2 * rad)/gridRes;
+            for (Real x = -rad; x <= rad; x+=gridDelta) {
+                for (Real y = -rad; y <= rad; y+=gridDelta) {
+                    Real ptRad = sqrt(x*x + y*y);
+                    if (ptRad <= rad) {
+                        if (ff(VEC2F(x,y)) > rad) {
+                            numAttracting++;
+                        }
+                        numPts++;
                     }
-
-                    // const Real adjustedMag = ((1 - fitScale) * actualMag) + (fitScale * targetMag);
-                    const Real adjustedMag = exp((1 - fitScale) * log(actualMag)) + (fitScale * log(targetMag));
-
-                    if (!::isnan(distance)) out << targetMag << ", " << adjustedMag << ", " << (nanOut? 1 : 0) << endl;
                 }
             }
-            PB_PROGRESS((x - min[0]) / (max[0] - min[0]));
+
+            printf("%f, %f\n", rad, (Real) numAttracting / numPts);
+            PB_PROGRESS((rad - min) / (max - min));
+
         }
 
         PB_END();
 
-        out.close();
+    }
 
+    static bool isAttractingRegion(FieldFunction2D& ff, Real radius, Real delta) {
+        // Do it the stupid way
+        for (Real x = -radius; x <= radius; x+=delta) {
+            for (Real y = -radius; y <= radius; y+=delta) {
+                if (sqrt(x*x + y*y) <= radius) {
+                    if (ff(VEC2F(x,y)) > radius) {
+                        // PRINTF("Found value %.5f inside radius %.5f", ff(VEC2F(x,y)), radius);
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    static Real getMaxAttractingRadius(FieldFunction2D& ff, Real gridDelta) {
+        Real radMin = 0;
+        Real radDelta = 1e-1;
+        int maxIterations = 10;
+
+        Real maxFound = 0;
+
+        for (int i = 0; i < maxIterations; ++i) {
+            Real radius = radMin + radDelta;
+            while (isAttractingRegion(ff, radius, gridDelta)) {
+                // PRINTD(radius);
+                if (radius > maxFound) maxFound = radius;
+                radius += radDelta;
+            }
+            radMin = radius - radDelta;
+            radDelta *= 1e-1;
+        }
+
+        return maxFound;
     }
 
 };
 
-// =============== INSPECTION FIELDS =======================
-
-class QuatQuatRotField: public FieldFunction3D {
-public:
-    QuatToQuatFn *func;
-    int i;
-    QuatQuatRotField(QuatToQuatFn* func, int i): func(func), i(i) {}
-
-    virtual Real getFieldValue(const VEC3F& pos) const override {
-        QUATERNION input(pos[0], pos[1], pos[2], 0);
-        QUATERNION transformed = func->getFieldValue(input);
-
-        // PRINTV4(transformed);
-        // PRINTE(transformed.magnitude());
-
-        QUATERNION normalized = transformed;
-
-        normalized.normalize();
-        // PRINTV4(normalized);
-        //
-        // PRINTE(normalized.magnitude());
-        //
-        // if(normalized.magnitude() == 0) exit(1);
-
-        return normalized[i];
-    }
-
-};
-
-class QuatQuatMagField: public FieldFunction3D {
-public:
-    QuatToQuatFn *func;
-    QuatQuatMagField(QuatToQuatFn* func): func(func) {}
-
-    virtual Real getFieldValue(const VEC3F& pos) const override {
-        QUATERNION input(pos[0], pos[1], pos[2], 0);
-        QUATERNION transformed = func->getFieldValue(input);
-        return transformed.magnitude();
-    }
-
-};
 
 #endif

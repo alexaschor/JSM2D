@@ -14,6 +14,7 @@ typedef unsigned int uint;
 typedef Matrix<Real, 2, 1 > VEC2F;
 typedef Matrix<Real, 3, 1 > VEC3F;
 typedef Matrix<int, 3, 1 > VEC3I;
+typedef Matrix<int, 2, 1 > VEC2I;
 typedef VectorXd VECTOR;
 
 #define MC_MAX_ROOTFINDING_ITERATIONS 100
@@ -23,12 +24,13 @@ typedef VectorXd VECTOR;
 #define DEBUGBOOL true
 
 // Printing various data types along with the variable name, filename and line numbet
+#define PRINTV2(v) if (DEBUGBOOL) fprintf(stderr, "%s:%d (%s)\t| %s={%.2e, %.2e};\n", __FILE__, __LINE__, __func__, #v, (v)[0], (v)[1])
 #define PRINTV3(v) if (DEBUGBOOL) fprintf(stderr, "%s:%d (%s)\t| %s={%.2e, %.2e, %.2e};\n", __FILE__, __LINE__, __func__, #v, (v)[0], (v)[1], (v)[2])
 #define PRINTV4(v) if (DEBUGBOOL) fprintf(stderr, "%s:%d (%s)\t| %s={%.2e, %.2e, %.2e, %.2e};\n", __FILE__, __LINE__, __func__, #v, (v)[0], (v)[1], (v)[2], (v)[3])
 #define PRINTD(x) if (DEBUGBOOL) fprintf(stderr, "%s:%d (%s)\t| %s=%f;\n", __FILE__, __LINE__, __func__, #x, x)
 #define PRINTE(x) if (DEBUGBOOL) fprintf(stderr, "%s:%d (%s)\t| %s=%e;\n", __FILE__, __LINE__, __func__, #x, x)
 #define PRINTI(x) if (DEBUGBOOL) fprintf(stderr, "%s:%d (%s)\t| %s=%d;\n", __FILE__, __LINE__, __func__, #x, x)
-#define PRINTF(format, ...) if (DEBUGBOOL) {fprintf(stderr, "%s:%d (%s)\t| ", __FILE__, __LINE__, __func__); fprintf(stderr, format, ## __VA_ARGS__);}
+#define PRINTF(format, ...) if (DEBUGBOOL) {fprintf(stderr, "%s:%d (%s)\t| ", __FILE__, __LINE__, __func__); fprintf(stderr, format, ## __VA_ARGS__); fprintf(stderr, "\n");}
 #define PRINT(x) if (DEBUGBOOL) {fprintf(stderr, "%s:%d (%s)\t| ", __FILE__, __LINE__, __func__); fprintf(stderr, x); fprintf(stderr, "\n");}
 
 // Here!
@@ -59,11 +61,11 @@ namespace progressBar {
         int lpad = (int) (progress * PBWIDTH);
         int rpad = PBWIDTH  - lpad;
         if (progress < ((float) 1 / PBWIDTH)) {
-            printf("[%s]", PB_EMPTYSTR);
+            fprintf(stderr, "[%s]", PB_EMPTYSTR);
         } else if (progress > ((float) (PBWIDTH-1) / PBWIDTH)) {
-            printf("[%s]", PB_FILLSTR);
+            fprintf(stderr, "[%s]", PB_FILLSTR);
         } else {
-            printf("[%.*s>%.*s]", lpad - 1, PB_FILLSTR, rpad, PB_EMPTYSTR);
+            fprintf(stderr, "[%.*s>%.*s]", lpad - 1, PB_FILLSTR, rpad, PB_EMPTYSTR);
         }
         fflush(stdout);
     }
@@ -72,55 +74,48 @@ namespace progressBar {
         int hours = seconds / 3600;
         int mins = (seconds % 3600) / 60;
         int secs = (seconds % 60);
-        printf("%02d:%02d:%02d", hours, mins, secs);
+        fprintf(stderr, "%02d:%02d:%02d", hours, mins, secs);
     }
 }
 
 #define PB_DECL() char PB_DESCRIPTION[256]; std::chrono::time_point<std::chrono::system_clock> PB_START_TIME, PB_CUR_TIME; std::chrono::duration<double> PB_DIFF; double PB_DURATION = 0
-#define PB_STARTD(description_fmt, ...) sprintf(PB_DESCRIPTION, description_fmt, ## __VA_ARGS__); PB_START_TIME = std::chrono::system_clock::now(); PB_PROGRESS(0)
+#define PB_STARTD(description_fmt, ...) {sprintf(PB_DESCRIPTION, description_fmt, ## __VA_ARGS__); PB_START_TIME = std::chrono::system_clock::now(); PB_PROGRESS(0);}
 
-#define PB_START(description_fmt, ...) char PB_DESCRIPTION[256]; sprintf(PB_DESCRIPTION, description_fmt, ## __VA_ARGS__); std::chrono::time_point<std::chrono::system_clock> PB_START_TIME = std::chrono::system_clock::now(), PB_CUR_TIME; std::chrono::duration<double> PB_DIFF; double PB_DURATION = 0; PB_PROGRESS(0)
-#define PB_PROGRESS(progress) PB_CUR_TIME = std::chrono::system_clock::now(); PB_DIFF = PB_CUR_TIME - PB_START_TIME; PB_DURATION = PB_DIFF.count(); \
-                              printf("\33[2K\r%s: %.2f%% ", PB_DESCRIPTION, (float) progress * 100); \
+#define PB_START(description_fmt, ...) char PB_DESCRIPTION[256]; sprintf(PB_DESCRIPTION, description_fmt, ## __VA_ARGS__); std::chrono::time_point<std::chrono::system_clock> PB_START_TIME = std::chrono::system_clock::now(), PB_CUR_TIME; std::chrono::duration<double> PB_DIFF; double PB_DURATION = 0; PB_PROGRESS(0);
+#define PB_PROGRESS(progress) {PB_CUR_TIME = std::chrono::system_clock::now(); PB_DIFF = PB_CUR_TIME - PB_START_TIME; PB_DURATION = PB_DIFF.count(); \
+                              fprintf(stderr, "\33[2K\r%s: %.2f%% ", PB_DESCRIPTION, (float) progress * 100); \
                               progressBar::printProgress(progress); \
-                              printf(" Elapsed: "); progressBar::printDuration(PB_DURATION); printf(", ETA: "); progressBar::printDuration( ((PB_DURATION / (float) (progress))) - PB_DURATION ); fflush(stdout)
-#define PB_END() printf("\33[2K\r%s: %.2f%% ", PB_DESCRIPTION, 100.0); progressBar::printProgress(1); printf(" Took: "); progressBar::printDuration(PB_DURATION); printf("\n")
+                              fprintf(stderr, " Elapsed: "); progressBar::printDuration(PB_DURATION); fprintf(stderr, ", ETA: "); progressBar::printDuration( ((PB_DURATION / (float) (progress))) - PB_DURATION ); fflush(stdout);}
+#define PB_END() {fprintf(stderr, "\33[2K\r%s: %.2f%% ", PB_DESCRIPTION, 100.0); progressBar::printProgress(1); fprintf(stderr, " Took: "); progressBar::printDuration(PB_DURATION); fprintf(stderr, "\n");}
 
-// Read and write VEC3F from file
+// Read and write VEC2F from file
 namespace MyEigen {
-    inline void write_vec3f(FILE* file, const VEC3F& vec) {
+    inline void write_vec2f(FILE* file, const VEC2F& vec) {
         if (sizeof(Real) == sizeof(double))
         {
             fwrite((void*)&vec[0], sizeof(double), 1, file);
             fwrite((void*)&vec[1], sizeof(double), 1, file);
-            fwrite((void*)&vec[2], sizeof(double), 1, file);
         }
         else
         {
-            double elementD[3];
+            double elementD[2];
             elementD[0] = vec[0];
             elementD[1] = vec[1];
-            elementD[2] = vec[2];
             fwrite((void*)&elementD[0], sizeof(double), 1, file);
             fwrite((void*)&elementD[1], sizeof(double), 1, file);
-            fwrite((void*)&elementD[2], sizeof(double), 1, file);
         }
     }
 
-
-    inline void read_vec3f(FILE* file, VEC3F& vec) {
+    inline void read_vec2f(FILE* file, VEC2F& vec) {
         // make sure it reads into a double
-        double elementD[3];
+        double elementD[2];
         fread((void*)&elementD[0], sizeof(double), 1, file);
         fread((void*)&elementD[1], sizeof(double), 1, file);
-        fread((void*)&elementD[2], sizeof(double), 1, file);
 
         // let the assign resolve the type issues
         vec[0] = elementD[0];
         vec[1] = elementD[1];
-        vec[2] = elementD[2];
     }
-
 }
 
 
