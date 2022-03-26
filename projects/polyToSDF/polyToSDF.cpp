@@ -25,7 +25,7 @@ public:
     virtual Real getFieldValue(const VEC2F &p) const override {
         Real d = (p-v[0]).dot(p-v[0]);
         Real s = 1.0;
-        for(int i=0, j=v.size()-1; i<v.size(); j=i, i++) {
+        for(uint i=0, j=v.size()-1; i<v.size(); j=i, i++) {
             VEC2F e = v[j] - v[i];
             VEC2F w =  p - v[i];
             VEC2F b = w - e*clamp( w.dot(e)/e.dot(e), 0.0, 1.0 );

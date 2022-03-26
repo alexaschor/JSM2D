@@ -2,6 +2,7 @@
 #define JULIA_H
 
 #include "field.h"
+#include <cmath>
 #include <complex>
 #include <limits>
 #include <random>
@@ -170,71 +171,69 @@ public:
 class DistanceMapInspection {
 public:
 
-    static void sampleAttractingPercent(FieldFunction2D& ff, int gridRes, Real min, Real max, Real radDelta) {
+    static Real findMaxValInShell(const FieldFunction2D& ff, int numRings, int numAngles, Real minRad, Real maxRad) {
+        Real maxFound = numeric_limits<Real>::lowest();
 
-        PB_START("Sampling radii");
-
-        if (min == 0) min = radDelta;
-
-        for (Real rad = min; rad < max; rad += radDelta) {
-            uint numPts = 0, numAttracting = 0;
-
-            Real gridDelta = (2 * rad)/gridRes;
-            for (Real x = -rad; x <= rad; x+=gridDelta) {
-                for (Real y = -rad; y <= rad; y+=gridDelta) {
-                    Real ptRad = sqrt(x*x + y*y);
-                    if (ptRad <= rad) {
-                        if (ff(VEC2F(x,y)) > rad) {
-                            numAttracting++;
-                        }
-                        numPts++;
-                    }
-                }
+        for (Real theta = 0; theta <= M_2_PI; theta+=(M_2_PI/numAngles)) {
+            for (Real rad = minRad; rad <= maxRad; rad+=(maxRad-minRad)/numRings) {
+                VEC2F samplePoint = rad * VEC2F(cos(theta), sin(theta));
+                Real val = ff(samplePoint);
+                if (val  > maxFound) maxFound = val;
             }
-
-            printf("%f, %f\n", rad, (Real) numAttracting / numPts);
-            PB_PROGRESS((rad - min) / (max - min));
-
-        }
-
-        PB_END();
-
-    }
-
-    static bool isAttractingRegion(FieldFunction2D& ff, Real radius, Real delta) {
-        // Do it the stupid way
-        for (Real x = -radius; x <= radius; x+=delta) {
-            for (Real y = -radius; y <= radius; y+=delta) {
-                if (sqrt(x*x + y*y) <= radius) {
-                    if (ff(VEC2F(x,y)) > radius) {
-                        // PRINTF("Found value %.5f inside radius %.5f", ff(VEC2F(x,y)), radius);
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    static Real getMaxAttractingRadius(FieldFunction2D& ff, Real gridDelta) {
-        Real radMin = 0;
-        Real radDelta = 1e-1;
-        int maxIterations = 10;
-
-        Real maxFound = 0;
-
-        for (int i = 0; i < maxIterations; ++i) {
-            Real radius = radMin + radDelta;
-            while (isAttractingRegion(ff, radius, gridDelta)) {
-                // PRINTD(radius);
-                if (radius > maxFound) maxFound = radius;
-                radius += radDelta;
-            }
-            radMin = radius - radDelta;
-            radDelta *= 1e-1;
         }
 
         return maxFound;
+    }
+
+    static Real getPercentAttractingInRadius(const FieldFunction2D& ff, int numRings, int numAngles, Real minRad, Real maxRad) {
+        int totalSamples = 0, attractingSamples = 0;
+
+        for (Real theta = 0; theta <= M_2_PI; theta+=(M_2_PI/numAngles)) {
+            for (Real rad = minRad; rad < maxRad; rad+=(maxRad-minRad)/numRings) {
+                VEC2F samplePoint = rad * VEC2F(cos(theta), sin(theta));
+                Real val = ff(samplePoint);
+                if (val  < rad) attractingSamples++;
+                totalSamples++;
+            }
+        }
+
+        return (Real) attractingSamples / totalSamples;
+    }
+
+    static vector<pair<Real, Real>> samplePercentAttracting(const FieldFunction2D& ff, int numRings, int numAngles, Real minRad, Real maxRad, Real radDelta) {
+        vector<pair<Real, Real>> samples;
+        for (Real rad = minRad; rad < maxRad; rad += radDelta) {
+            Real val = getPercentAttractingInRadius(ff, numRings, numAngles, 0, rad);
+            samples.push_back(pair<Real, Real>(rad,val));
+            // PRINTF("%.4f\t=>\t%.4f", rad, val);
+        }
+        return samples;
+    }
+
+    static Real findMaxAttractingRadius(const FieldFunction2D& ff, int angularRes, int shellRes, Real min, Real escape, Real radDelta) {
+        // PB_START("Sampling radii");
+
+        Real maxFound = numeric_limits<Real>::lowest();
+        Real maxRadius = 0;
+
+        for (Real rad = min+radDelta; rad < escape; rad += radDelta) {
+            Real val = findMaxValInShell(ff, shellRes, angularRes, rad-radDelta, rad);
+            if (val > maxFound) maxFound = val;
+
+
+            if (val <= rad) { // Is attracting radius
+                if (rad > maxRadius) maxRadius = rad;
+                // PRINTF("Max value in radius %.4f:\t %.4f\t***", rad, maxFound);
+            } else {
+                // PRINTF("Max value in radius %.4f:\t %.4f", rad, maxFound);
+            }
+
+            // PB_PROGRESS((rad - min) / (escape - min));
+        }
+
+        // PB_END();
+
+        return maxRadius;
     }
 
 };

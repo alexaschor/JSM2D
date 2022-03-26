@@ -1,7 +1,7 @@
 SHELL := /bin/bash -e
 LIBS =
 
-all: main
+all: main interactive svgToPoly polyToSDF
 
 svgToPoly:
 	cd projects/svgToPoly; make

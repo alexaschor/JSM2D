@@ -34,8 +34,8 @@ int yScreenRes = 800;
 int xMouse, yMouse;
 int mouseButton;
 int mouseState;
-int xField = -1;
-int yField = -1;
+uint xField = -1;
+uint yField = -1;
 float zoom = 1.0;
 float fieldZoom = 1.0; // When resetting field bounds, zoom resets but fieldZoom does not;
 
@@ -56,11 +56,16 @@ VEC2F fieldMax(1, 1);
 
 Grid2D *distField;
 
+// Kinda hacky to make this global but avoids having to use a capturing lambda std::function below
+vector<pair<Real, Real>> radiusAttractionPercents;
+
 typedef enum ViewMode {
     MEMBERSHIP,
     LOG_MAGNITUDE,
     DISTANCE,
-    FIRST_ITER_RAD
+    FIRST_ITER_RAD,
+    IN_OR_OUT,
+    ZONES
 } ViewMode;
 
 bool GLOBAL_liveView = true;
@@ -288,7 +293,7 @@ void normalize() {
     Real minFound = numeric_limits<Real>::max();
     Real maxFound = numeric_limits<Real>::min();
 
-    for (int i = 0; i < viewingField->totalCells(); ++i) {
+    for (uint i = 0; i < viewingField->totalCells(); ++i) {
         if ((*cachedViewingField)[i] < minFound) minFound = (*cachedViewingField)[i];
         if ((*cachedViewingField)[i] > maxFound) maxFound = (*cachedViewingField)[i];
     }
@@ -394,8 +399,8 @@ void glutMouseMotion(int x, int y) {
 
         if (mouseButton == GLUT_LEFT_BUTTON)
         {
-            eyeCenter[0] -= xDiff * speed;
-            eyeCenter[1] += yDiff * speed;
+            eyeCenter[0] -= xDiff * speed * zoom;
+            eyeCenter[1] += yDiff * speed * zoom;
         }
         if (mouseButton == GLUT_RIGHT_BUTTON)
         {
@@ -452,6 +457,16 @@ void glutPassiveMouseMotion(int x, int y) {
     }
 }
 
+Real closestLookupInRealRealPairs(Real key, vector<pair<Real, Real>> pairs) {
+    for (uint i = 0; i < pairs.size(); ++i) {
+        if (pairs[i].first > key) {
+            return pairs[i].second;
+        }
+    }
+    return pairs[pairs.size()-1].second;
+}
+
+
 void recomputeJuliaSet(int res) { //XXX default param value was given above in forward decl
     if (cachedViewingField != 0) delete cachedViewingField;
 
@@ -480,8 +495,29 @@ void recomputeJuliaSet(int res) { //XXX default param value was given above in f
         originalField = cachedViewingField;
     }
 
-    // Compute min radius
-    // FieldFunction2D radField( [](VEC2F pt) { return exp((*distField)(pt) * GLOBAL_params.C); } );
+    if (GLOBAL_params.mode == ZONES) {
+        FieldFunction2D radField( [](VEC2F pt) { return exp((*distField)(pt) * GLOBAL_params.C); } );
+        radiusAttractionPercents = DistanceMapInspection::samplePercentAttracting(radField, 10, 20, 0, 4, 0.01);
+        FieldFunction2D captivityField( [](VEC2F pt) { return closestLookupInRealRealPairs(exp((*distField)(pt) * GLOBAL_params.C), radiusAttractionPercents); } );
+
+        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &captivityField);
+        originalField = cachedViewingField;
+    }
+
+    if (GLOBAL_params.mode == IN_OR_OUT) {
+        FieldFunction2D inOutField( [](VEC2F pt) { return ((exp((*distField)(pt) * GLOBAL_params.C)) < pt.norm()) ? 1.0:0.0; } );
+
+        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &inOutField);
+        originalField = cachedViewingField;
+    }
+
+    // for (pair<Real, Real> p : samples) {
+    //     PRINTF("%.4f:\t%.4f", p.first, p.second);
+    // }
+
+    // PRINTD(DistanceMapInspection::findMaxAttractingRadius(radField, 300, 5, 0, 1, 1e-3));
+
+    // DistanceMapInspection::getMaxAttractingRadius(radField, 300);
     // DistanceMapInspection::sampleAttractingPercent(radField, 300, 0, 0.25, 1e-3);
 
 }
@@ -556,14 +592,21 @@ int glvuWindow() {
     myBar = TwNewBar("params");
     TwDefine("params label='Julia set parameters' size='320 200' valueswidth='fit'");
 
-    TwEnumVal ViewModeEV[] = { {MEMBERSHIP, "Set membership"}, {LOG_MAGNITUDE, "Log magnitude"}, {DISTANCE, "Signed distance"}, {FIRST_ITER_RAD, "First iteration radius"} };
-    TwType seasonType = TwDefineEnum("View Mode", ViewModeEV, 4);
+    TwEnumVal ViewModeEV[] = {
+        {MEMBERSHIP, "Set membership"},
+        {LOG_MAGNITUDE, "Log magnitude"},
+        {DISTANCE, "Signed distance"},
+        {FIRST_ITER_RAD, "First iteration radius"},
+        {ZONES, "R(i+1) captivity rate"},
+        {IN_OR_OUT, "R(i+1) < R(i)"}
+    };
+    TwType seasonType = TwDefineEnum("View Mode", ViewModeEV, 6);
 
     TwAddVarRW(myBar, "View mode", seasonType, &GLOBAL_params.mode, NULL);
     TwAddVarRW(myBar, "Live view", TW_TYPE_BOOL32, &GLOBAL_liveView, NULL);
     TwAddVarRW(myBar, "C", TW_TYPE_DOUBLE, &GLOBAL_params.C, "min=1 max=1000 step=1");
     TwAddVarRW(myBar, "Max iterations", TW_TYPE_INT32, &GLOBAL_params.maxIterations, "min=1 max=30 step=1");
-    TwAddVarRW(myBar, "Resolution", TW_TYPE_INT32, &GLOBAL_params.res, "min=20 max=1000 step=1");
+    TwAddVarRW(myBar, "Resolution", TW_TYPE_INT32, &GLOBAL_params.res, "min=20 max=1000 step=10");
     TwAddVarRW(myBar, "Escape radius", TW_TYPE_DOUBLE, &GLOBAL_params.escape, "min=1 max=1000 step=0.5");
     TwAddButton(myBar, "Zoom field bounds", setFieldBoundsCallback, NULL, NULL);
     TwAddButton(myBar, "Reset field bounds", resetFieldBoundsCallback, NULL, NULL);
@@ -599,7 +642,7 @@ int main(int argc, char** argv) {
     GLOBAL_params.C = atof(argv[3]);
     GLOBAL_params.res = atoi(argv[2]);
 
-    GLOBAL_oldParams = GLOBAL_params;
+    // GLOBAL_oldParams = GLOBAL_params;
 
     recomputeJuliaSet();
 
