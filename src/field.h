@@ -109,6 +109,22 @@ public:
         }
     }
 
+    virtual VEC2F getCellCenter(const VEC2I& pos) const {
+        if (!hasMapBox) {
+            printf("Attempting getCellCenter on a Grid without a mapBox!\n");
+            exit(1);
+        }
+
+        VEC2F cellCornerToCenter = mapBox.span().cwiseQuotient(VEC2F(xRes, yRes))/2.0;
+
+        VEC2F posV2F(pos[0], pos[1]);
+        return mapBox.min() + posV2F.cwiseQuotient(VEC2F(xRes, yRes)).cwiseProduct(mapBox.span()) + cellCornerToCenter;
+    }
+
+    virtual VEC2F getCellCenter(uint x, uint y) const {
+        return getCellCenter(VEC2I(x,y));
+    }
+
     virtual void writeCSV(string filename) {
         ofstream out;
         out.open(filename);

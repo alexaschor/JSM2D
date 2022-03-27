@@ -92,16 +92,17 @@ public:
     ComplexMap* p;
 
     Real c;
+    Real b;
 
 public:
-    DistanceGuidedMap(Grid2D* distanceField,  ComplexMap* p, Real c = 300):
-        distanceField(distanceField), p(p), c(c){}
+    DistanceGuidedMap(Grid2D* distanceField,  ComplexMap* p, Real c = 300, Real b=0):
+        distanceField(distanceField), p(p), c(c), b(b){}
 
     virtual COMPLEX getFieldValue(COMPLEX q) const override {
         VEC2F qV2(real(q), imag(q));
 
         const Real distance = (*distanceField)(qV2);
-        Real radius = exp(c * distance);
+        Real radius = exp((c * distance) + b);
 
         // Evaluate polynomial
         q = p->getFieldValue(q);
@@ -234,6 +235,40 @@ public:
         // PB_END();
 
         return maxRadius;
+    }
+
+    static vector<Real> samplePercentInside(const FieldFunction2D& distField, int angularRes, Real maxRad, Real radDelta) {
+        vector<Real> out{};
+        for(Real rad = 0; rad < maxRad; rad+=radDelta) {
+            int numSamples=0, numInside=0;
+            for (Real theta = 0; theta <= M_2_PI; theta+=(M_2_PI/angularRes)) {
+                VEC2F samplePoint = rad * VEC2F(cos(theta), sin(theta));
+                if (distField(samplePoint) < 0) {
+                    numInside++;
+                }
+                numSamples++;
+            }
+
+            out.push_back((Real) numInside / numSamples);
+        }
+
+        return out;
+    }
+
+    static vector<Real> sampleAverageDistance(const FieldFunction2D& distField, int angularRes, Real maxRad, Real radDelta) {
+        vector<Real> out{};
+        for(Real rad = 0; rad < maxRad; rad+=radDelta) {
+            Real totalDist=0, numSamples=0;
+            for (Real theta = 0; theta <= M_2_PI; theta+=(M_2_PI/angularRes)) {
+                VEC2F samplePoint = rad * VEC2F(cos(theta), sin(theta));
+                totalDist += distField(samplePoint);
+                numSamples++;
+            }
+
+            out.push_back(totalDist / numSamples);
+        }
+
+        return out;
     }
 
 };
