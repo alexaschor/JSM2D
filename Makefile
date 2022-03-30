@@ -1,6 +1,8 @@
 SHELL := /bin/bash -e
 LIBS =
 
+include ./projects/include.mk
+
 all: main interactive render svgToPoly polyToSDF ppmToSDF
 
 svgToPoly:
