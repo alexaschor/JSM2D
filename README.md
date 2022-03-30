@@ -4,9 +4,10 @@
 
 Building:
 1. `git clone https://github.com/alexaschor/DQM2D`
-2. `mkdir bin`
-3. If on Linux, go to `include.mk`, comment out the Mac part and uncomment the Linux part. For either platform you may need to change CXX to whichever `g++` you want to use.
-4. `make`
+2. `cd DQM2D`
+3. `mkdir bin`
+4. If on Linux, go to `include.mk`, comment out the Mac part and uncomment the Linux part. For either platform you may need to change CXX to whichever `g++` you want to use.
+5. `make`
 
 SDF from SVG (only supports single polygons):
 1. `./bin/svgToPoly data/XXX.svg data/XXX.poly`
