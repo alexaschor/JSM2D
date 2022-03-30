@@ -7,6 +7,7 @@
 #include <limits>
 #include <unordered_map>
 #include <queue>
+#include <functional>
 
 #include "SETTINGS.h"
 
@@ -194,7 +195,7 @@ public:
         fclose(fp);
         delete[] pixels;
 
-        printf("Wrote %d x %d field (%d values) to %s\n", xRes, yRes, (xRes * yRes), filename.c_str());
+        // printf("Wrote %d x %d field (%d values) to %s\n", xRes, yRes, (xRes * yRes), filename.c_str());
     }
 
     // Writes to F2D file using the field bounds if the field has them, otherwise using
@@ -255,6 +256,8 @@ public:
             PB_END();
         }
     }
+
+    virtual ~Grid2D() {};
 };
 
 class ArrayGrid2D: public Grid2D {
@@ -330,6 +333,65 @@ public:
 
                 delete[] dataDouble;
             } else fread((void*)values, sizeof(Real), totalCells, file);
+
+        } else if (format == "ppm") {
+
+            FILE* input;
+            int xRes,yRes,max;
+            char rgb[3];
+            char buffer[200];
+
+            if ((input = fopen(filename.c_str(),"r")) == NULL) {
+                fprintf(stderr,"Cannot open file %s \n",filename.c_str());
+                exit(1);
+            }
+
+            /* read a line of input */
+            fgets(buffer,200,input);
+            if (strncmp(buffer,"P6",2) != 0) {
+                fprintf(stderr,"%s is not a binary PPM file \n",filename.c_str());
+                exit(1);
+            }
+
+            /* get second line, ignoring comments */
+            do {
+                fgets(buffer,200,input);
+            } while (strncmp(buffer,"#",1) == 0);
+
+            if (sscanf(buffer,"%d %d",&xRes,&yRes) != 2) {
+                fprintf(stderr,"can't read sizes! \n");
+                exit(1);
+            }
+
+            /* third line, ignoring comments */
+            do {
+                fgets(buffer,200,input);
+            } while (strncmp(buffer,"#",1) == 0);
+
+            if (sscanf(buffer,"%d",&max) != 1) {
+                fprintf(stderr,"what about max size? \n");
+                exit(1);
+            }
+
+            fprintf(stderr,"reading %d columns %d rows \n",xRes,yRes);
+            this->xRes = xRes;
+            this->yRes = yRes;
+
+            try {
+                values = new Real[xRes * yRes];
+            } catch(bad_alloc& exc) {
+                printf("Failed to allocate %.2f MB for ArrayGrid2D read from file!\n", (xRes * yRes * sizeof(Real)) / pow(2.0,20.0));
+                exit(0);
+            }
+
+            for (int i=0; i<xRes*yRes; i++) {
+                    fread(rgb,sizeof(char),3,input);
+                    Real r = (Real) rgb[0] / max;
+                    Real g = (Real) rgb[1] / max;
+                    Real b = (Real) rgb[2] / max;
+
+                    values[i] = (r + g + b)/3.0;
+            }
 
         } else {
             PRINT("CSV import not implemented yet!");
@@ -432,6 +494,8 @@ public:
                 this->at(i, j) = function->getFieldValue(samplePoint);
             }
         }
+
+        setMapBox(AABB_2D(functionMin, functionMax));
 
     }
 
@@ -659,11 +723,137 @@ public:
 
         return output;
     }
-
-
-
 };
 
+
+// "Dead reckoning" SDF from 2D image, lightly adapted from https://gist.github.com/t-mat/6f5b10f93e022aa0692789b3c07216b4
+class DRSignedDistanceGrid : public ArrayGrid2D {
+public:
+    DRSignedDistanceGrid(int xRes, int yRes, VEC2F fieldMin, VEC2F fieldMax, const FieldFunction2D &membershipFn): ArrayGrid2D(xRes, yRes) {
+        const auto contains = [&](int x, int y) -> bool {
+            return x >= 0 && x < xRes && y >= 0 && y < yRes;
+        };
+
+        // I - a 2D binary image
+        const bool outside = false;
+        const bool inside = true;
+
+        const auto I = [&](int x, int y) -> bool {
+            VEC2F pt = fieldMin + VEC2F((Real)x/xRes, (Real)y/yRes).cwiseProduct(fieldMax - fieldMin);
+            return membershipFn(pt) == 0 ? outside : inside;
+        };
+
+        // d - a 2D grey image representing the distance image
+        std::vector<float> ds(xRes * yRes);
+        const float inf = static_cast<float>(256 * 256 * 256);
+        const auto getd = [&](int x, int y) -> float { return ds[y*xRes + x]; };
+        const auto setd = [&](int x, int y, float v) { ds[y*xRes + x] = v; };
+        const auto distance = [](int x, int y) -> float {
+            return hypotf(static_cast<float>(x), static_cast<float>(y));
+        };
+
+        // p - for each pixel, the corresponding border point
+        struct Point { int x, y; };
+        std::vector<Point> ps(xRes * yRes);
+        const Point outOfBounds = { -1, -1 };
+        const auto getp = [&](int x, int y) -> Point { return ps[y*xRes + x]; };
+        const auto setp = [&](int x, int y, const Point& p) { ps[y*xRes + x] = p; };
+
+        // initialize d
+        // initialize immediate interior & exterior elements
+        for(int y = 0; y < yRes; ++y) {
+            for(int x = 0; x < xRes; ++x) {
+                const bool c = I(x, y);
+                const bool xRes = contains(x-1, y) ? I(x-1, y) : outside;
+                const bool e = contains(x+1, y) ? I(x+1, y) : outside;
+                const bool n = contains(x, y-1) ? I(x, y-1) : outside;
+                const bool s = contains(x, y+1) ? I(x, y+1) : outside;
+                if((xRes != c) || (e != c) || (n != c) || (s != c)) {
+                    setd(x, y, 0);
+                    setp(x, y, { x, y });
+                } else {
+                    setd(x, y, inf);
+                    setp(x, y, outOfBounds);
+                }
+            }
+        }
+
+        // Perform minimum distance choice for single pixel, single direction.
+        enum class Dir {
+            NW, N, NE,      // NW=(x-1, y-1), N=(x, y-1), NE=(x+1, y-1)
+            xRes,     E,       // xRes =(x-1, y),               E =(x+1, y)
+            SW, S, SE       // SW=(x-1, y+1), S=(x, y+1), SE=(x+1, y+1)
+        };
+        const auto f = [&](int x, int y, Dir dir) {
+            // d1 - distance between two adjacent pixels in either the x or y direction
+            const float d1 = 1.0f;
+
+            // d2 - distance between two diagonally adjacent pixels (sqrt(2))
+            const float d2 = d1 * 1.4142135623730950488f;
+
+            int dx, dy;
+            float od;
+            switch(dir) {
+            default:
+            case Dir::NW: dx = -1; dy = -1; od = d2; break; // first pass
+            case Dir::N:  dx =  0; dy = -1; od = d1; break; // first pass
+            case Dir::NE: dx =  1; dy = -1; od = d2; break; // first pass
+            case Dir::xRes:  dx = -1; dy =  0; od = d1; break; // first pass
+            case Dir::E:  dx =  1; dy =  0; od = d1; break; // final pass
+            case Dir::SW: dx = -1; dy =  1; od = d2; break; // final pass
+            case Dir::S:  dx =  0; dy =  1; od = d1; break; // final pass
+            case Dir::SE: dx =  1; dy =  1; od = d2; break; // final pass
+            }
+            const bool b = contains(x+dx, y+dy);
+            const float cd = b ? getd(x+dx, y+dy) : inf;
+            if(cd + od < getd(x, y)) {
+                const Point p = b ? getp(x+dx, y+dy) : outOfBounds;
+                setp(x, y, p);
+                const int xx = x - p.x;
+                const int yy = y - p.y;
+                const float nd = distance(xx, yy);
+                setd(x, y, nd);
+            }
+        };
+
+        // perform the first pass
+        for(int y = 0; y < yRes; ++y) {           // top to bottom
+            for(int x = 0; x < xRes; ++x) {        // left to right
+                static const Dir dirs[] = { Dir::NW, Dir::N, Dir::NE, Dir::xRes };
+                for(const Dir dir : dirs) {
+                    f(x, y, dir);
+                }
+            }
+        }
+
+        // perform the final pass
+        for(int y = yRes-1; y >= 0; --y) {        // bottom to top
+            for(int x = xRes-1; x >= 0; --x) {     // right to left
+                static const Dir dirs[] = { Dir::E, Dir::SW, Dir::S, Dir::SE };
+                for(const Dir dir : dirs) {
+                    f(x, y, dir);
+                }
+            }
+        }
+
+        // indicate inside & outside
+        for(int y = 0; y < yRes; ++y) {
+            for(int x = 0; x < xRes; ++x) {
+                float d = getd(x, y);
+                if(I(x, y) == inside) {
+                    d = -d;                         // Negative distance means inside.
+                }
+
+                // TODO Assumes grid cells are squares. Currently d is
+                // the distance in pixels, and we want it in field units
+                this->at(x, y) = d * ((fieldMax - fieldMin)[0] / xRes);
+            }
+        }
+
+        this->setMapBox(AABB_2D(fieldMin, fieldMax));
+
+    }
+};
 
 
 #endif

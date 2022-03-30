@@ -1,5 +1,7 @@
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <iomanip>
 #include "SETTINGS.h"
 #include "field.h"
 #include "julia.h"
@@ -70,8 +72,13 @@ Real GLOBAL_radInsidePercentSpacing;
 vector<Real> GLOBAL_radAvgDistances;
 Real GLOBAL_radAvgDistanceSpacing;
 
+// And for swap field
+vector<Real> GLOBAL_radAvgDistancesSwap;
+Real GLOBAL_radAvgDistanceSwapSpacing;
+
 Real getPercentInsideForRad(Real rad) { return GLOBAL_radInsidePercents[min((uint) GLOBAL_radInsidePercents.size()-1, (uint) (rad / GLOBAL_radInsidePercentSpacing))]; }
 Real getAvgDistanceForRad(Real rad) { return GLOBAL_radAvgDistances[min((uint) GLOBAL_radAvgDistances.size()-1, (uint) (rad / GLOBAL_radAvgDistanceSpacing))]; }
+Real getAvgDistanceForRadSwap(Real rad) { return GLOBAL_radAvgDistancesSwap[min((uint) GLOBAL_radAvgDistancesSwap.size()-1, (uint) (rad / GLOBAL_radAvgDistanceSwapSpacing))]; }
 void dumpEvenlySpacedArrToCSV(vector<Real> vec, string filename, Real spacing) {
     ofstream out;
     out.open(filename);
@@ -91,6 +98,7 @@ typedef enum ViewMode {
     MEMBERSHIP,
     LOG_MAGNITUDE,
     DISTANCE,
+    SWAP_DISTANCE,
     FIRST_ITER_RAD,
     IN_OR_OUT,
     CAPTIVITY_RATE,
@@ -103,6 +111,7 @@ bool GLOBAL_liveView = true;
 bool GLOBAL_liveZoom = true;
 
 bool GLOBAL_drawRoots = false;
+bool GLOBAL_drawOrigin = false;
 
 typedef struct JuliaParams {
     POLYNOMIAL_2D poly;
@@ -112,6 +121,7 @@ typedef struct JuliaParams {
     Real escape = 20;
     int res = 300;
     ViewMode mode = LOG_MAGNITUDE;
+    bool dfSwapOn = false;
 } JuliaParams;
 
 typedef struct PolyParams {
@@ -144,6 +154,16 @@ PolyParams GLOBAL_polyParams;
 
 JuliaParams GLOBAL_params;
 JuliaParams GLOBAL_oldParams;
+
+
+// Globals for ATW distfieldswap control
+char GLOBAL_dfSwapFilename[128] = "star.sdf";
+ArrayGrid2D *swapDistFieldCoarse = NULL;
+Grid2D *swapDistField = NULL;
+
+// Globals for animation export
+char GLOBAL_animationScriptFilename[128] = "anim.txt";
+char GLOBAL_juliaParamsFilename[128] = "params.txt";
 
 ///////////////////////////////////////////////////////////////////////
 // Print a string to the GL window
@@ -285,6 +305,16 @@ void glutDisplay()
             glVertex2f(vs[0], vs[1]);
             glEnd();
         }
+    }
+
+    if (GLOBAL_drawOrigin) {
+        VEC2F os = fieldSpaceToScreenSpace(VEC2F(0,0));
+
+        glColor3f(0, 1, 0);
+        glPointSize(10);
+        glBegin(GL_POINTS);
+        glVertex2f(os[0], os[1]);
+        glEnd();
     }
 
 
@@ -558,6 +588,11 @@ Real closestLookupInRealRealPairs(Real key, vector<pair<Real, Real>> pairs) {
 Real radFn(VEC2F pt) {
     return exp(((*distField)(pt) + GLOBAL_params.B) * GLOBAL_params.C);
 }
+// And a second one for the swap field.
+Real radFnSwap(VEC2F pt) {
+    return exp(((*swapDistField)(pt) + GLOBAL_params.B) * GLOBAL_params.C);
+}
+
 
 
 void recomputeJuliaSet(int res) { //XXX default param value was given above in forward decl
@@ -567,19 +602,39 @@ void recomputeJuliaSet(int res) { //XXX default param value was given above in f
 
     // Julia set viewing
     if (GLOBAL_params.mode == ViewMode::LOG_MAGNITUDE || GLOBAL_params.mode == ViewMode::MEMBERSHIP) {
-        DistanceGuidedMap m2(distField, &GLOBAL_params.poly, GLOBAL_params.C, GLOBAL_params.B);
+        if (GLOBAL_params.dfSwapOn) {
+            // WITH SWAPPING
+            DistanceGuidedMap dMap(distField, &GLOBAL_params.poly, GLOBAL_params.C, GLOBAL_params.B);
+            DistanceGuidedMap dMapSwap(swapDistField, &GLOBAL_params.poly, GLOBAL_params.C, GLOBAL_params.B);
 
-        JuliaSet julia(&m2, GLOBAL_params.maxIterations, GLOBAL_params.escape);
-        julia.mode = (GLOBAL_params.mode == MEMBERSHIP)? JuliaSet::SET_MEMBERSHIP: JuliaSet::LOG_MAGNITUDE;
+            JuliaSet julia(&dMap, &dMapSwap, GLOBAL_params.maxIterations, GLOBAL_params.escape);
+            julia.mode = (GLOBAL_params.mode == MEMBERSHIP)? JuliaSet::SET_MEMBERSHIP: JuliaSet::LOG_MAGNITUDE;
 
+            cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &julia);
+            originalField = cachedViewingField;
 
-        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &julia);
-        originalField = cachedViewingField;
+        } else {
+            // NORMAL
+            DistanceGuidedMap dMap(distField, &GLOBAL_params.poly, GLOBAL_params.C, GLOBAL_params.B);
+
+            JuliaSet julia(&dMap, GLOBAL_params.maxIterations, GLOBAL_params.escape);
+            julia.mode = (GLOBAL_params.mode == MEMBERSHIP)? JuliaSet::SET_MEMBERSHIP: JuliaSet::LOG_MAGNITUDE;
+
+            cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &julia);
+            originalField = cachedViewingField;
+
+        }
     }
 
     // View distance field directly
     else if (GLOBAL_params.mode == DISTANCE) {
         cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, distField);
+        originalField = cachedViewingField;
+    }
+
+    // View (secondary) distance field directly, but only if it exists to avoid crash
+    else if (GLOBAL_params.mode == SWAP_DISTANCE) {
+        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, swapDistField==0? distField:swapDistField);
         originalField = cachedViewingField;
     }
 
@@ -622,10 +677,17 @@ void recomputeJuliaSet(int res) { //XXX default param value was given above in f
 
     // Plot the avg signed distance along the circle of R(i+1), so polynomial agnostic.
     else if (GLOBAL_params.mode == AVG_DISTANCE) {
-        FieldFunction2D avgDistanceField( [](VEC2F pt) { return getAvgDistanceForRad(radFn(pt)); } );
+        if (GLOBAL_params.dfSwapOn && swapDistField != 0) {
+            FieldFunction2D avgDistanceField( [](VEC2F pt) { return getAvgDistanceForRadSwap(radFn(pt)); } );
 
-        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &avgDistanceField);
-        originalField = cachedViewingField;
+            cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &avgDistanceField);
+            originalField = cachedViewingField;
+        } else {
+            FieldFunction2D avgDistanceField( [](VEC2F pt) { return getAvgDistanceForRad(radFn(pt)); } );
+
+            cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &avgDistanceField);
+            originalField = cachedViewingField;
+        }
     }
 
     // Plot the rotation caused by the polynomial at each point in space, as a scalar corresponding to a CCW angle.
@@ -692,10 +754,75 @@ void TW_CALL newPolynomialCallback(void *clientData) {
         GLOBAL_polyParams.minPower,
         GLOBAL_polyParams.maxPower,
         GLOBAL_polyParams.numRoots,
-        GLOBAL_polyParams.allowNonIntegerPowers); // Dang, maybe I should have used shorter variable names :)
+        GLOBAL_polyParams.allowNonIntegerPowers);
     // recomputeJuliaSet();
     // updateViewingTexture();
     // if (normalized) normalize();
+}
+
+VEC2F findDistanceFieldCenter(const Grid2D& distField) {
+    // Descending the gradient would be a ton faster, but
+    // let's just exhaustively search for now
+
+    VEC2I minPt;
+    Real min = numeric_limits<Real>::max();
+
+    for (uint x=0; x<distField.xRes; x++) {
+        for (uint y=0; y<distField.yRes; y++) {
+            Real val = distField.get(x, y);
+            if (val < min){
+                minPt = VEC2I(x,y);
+                min = val;
+            }
+        }
+    }
+
+    return distField.getCellCenter(minPt);
+}
+
+void TW_CALL loadSwapFieldCallback(void *clientData) {
+    if (swapDistField != 0) delete swapDistField;
+    if (swapDistFieldCoarse != 0) delete swapDistFieldCoarse;
+    swapDistFieldCoarse = new ArrayGrid2D(GLOBAL_dfSwapFilename);
+    swapDistField = new InterpolationGrid2D(swapDistFieldCoarse);
+
+    // Shift the distance field so that the minimum distance is at the origin
+    VEC2F dfCenter = findDistanceFieldCenter(*swapDistField);
+    swapDistField->mapBox.setCenter(-dfCenter); // XXX I'm not sure why this has to be negative. Something might be afoot.
+
+    // Compute the radius-distance relation
+    GLOBAL_radAvgDistanceSwapSpacing = 0.0005;
+    GLOBAL_radAvgDistancesSwap = DistanceMapInspection::sampleAverageDistance(*swapDistField, 360, 0.25, GLOBAL_radAvgDistanceSpacing);
+}
+
+void TW_CALL writeAnimFrameCallback(void *clientData) {
+    ofstream out;
+    out.open(GLOBAL_animationScriptFilename, ios_base::app);
+    if (out.is_open() == false)
+        return;
+
+    out << setprecision(17) << fieldMin[0] << ", " << fieldMin[1] << ", " << fieldMax[0] << ", " << fieldMax[1] << endl;
+
+    out.close();
+}
+
+void TW_CALL writeParamsCallback(void *clientData) {
+    ofstream out;
+    out.open(GLOBAL_juliaParamsFilename);
+    if (out.is_open() == false)
+        return;
+
+    out << GLOBAL_params.C << endl;
+    out << GLOBAL_params.B << endl;
+    out << GLOBAL_params.maxIterations << endl;
+    out << GLOBAL_params.escape << endl;
+
+    out << GLOBAL_params.poly.roots.size() << endl;
+    for (int i = 0; i < GLOBAL_params.poly.roots.size(); ++i) {
+        out << GLOBAL_params.poly.roots[i].real() << ", " << GLOBAL_params.poly.roots[i].imag() << ", " << GLOBAL_params.poly.powers[i] << endl;
+    }
+
+    out.close();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -735,15 +862,16 @@ int glvuWindow() {
     TwEnumVal ViewModeEV[] = {
         {MEMBERSHIP, "Set membership"},
         {LOG_MAGNITUDE, "Log magnitude"},
-        {DISTANCE, "Signed distance"},
+        {DISTANCE, "Signed distance field"},
+        {SWAP_DISTANCE, "Secondary SDF"},
         {FIRST_ITER_RAD, "First iteration radius"},
         {CAPTIVITY_RATE, "R(i+1) captivity rate"},
-        {INSIDE_RATE, "R(i+1) chance to be inside target"},
+        {INSIDE_RATE, "R(i+1) \% inside target"},
         {AVG_DISTANCE, "R(i+1) average distance from surface"},
         {IN_OR_OUT, "R(i+1) < R(i)?"},
         {ROTATION, "Rotation field"}
     };
-    TwType viewEnumType = TwDefineEnum("View Mode", ViewModeEV, 9);
+    TwType viewEnumType = TwDefineEnum("View Mode", ViewModeEV, 10);
 
     TwAddVarRW(juliaBar, "View mode", viewEnumType, &GLOBAL_params.mode, NULL);
     TwAddSeparator(juliaBar, "sep1", NULL);
@@ -751,91 +879,90 @@ int glvuWindow() {
     TwAddVarRW(juliaBar, "B", TW_TYPE_DOUBLE, &GLOBAL_params.B, "min=-5 max=5 step=0.01");
     TwAddVarRW(juliaBar, "Max iterations", TW_TYPE_INT32, &GLOBAL_params.maxIterations, "min=1 max=30 step=1");
     TwAddVarRW(juliaBar, "Resolution", TW_TYPE_INT32, &GLOBAL_params.res, "min=20 max=1000 step=10");
-    TwAddVarRW(juliaBar, "Escape radius", TW_TYPE_DOUBLE, &GLOBAL_params.escape, "min=1 max=1000 step=0.5");
+    TwAddVarRW(juliaBar, "Escape radius", TW_TYPE_DOUBLE, &GLOBAL_params.escape, "min=1 step=0.5");
     TwAddSeparator(juliaBar, "sep2", NULL);
     TwAddVarRW(juliaBar, "Live field bounds", TW_TYPE_BOOL8, &GLOBAL_liveZoom, NULL);
     TwAddButton(juliaBar, "Zoom field bounds", setFieldBoundsCallback, NULL, NULL);
     TwAddButton(juliaBar, "Reset field bounds", resetFieldBoundsCallback, NULL, NULL);
     TwAddVarRW(juliaBar, "Live update", TW_TYPE_BOOL8, &GLOBAL_liveView, NULL);
     TwAddButton(juliaBar, "Recompute", recomputeCallback, NULL, NULL);
-    TwAddSeparator(juliaBar, "sep3", NULL);
-    TwAddVarRW(juliaBar, "Draw root positions", TW_TYPE_BOOL8, &GLOBAL_drawRoots, NULL);
+    TwAddVarRW(juliaBar, "Draw origin", TW_TYPE_BOOL8, &GLOBAL_drawOrigin, NULL);
 
     TwBar *polyBar;
     polyBar = TwNewBar("poly");
     TwDefine("poly label='Polynomial parameters' size='300 120' valueswidth='50' iconified=true");
     TwAddVarRW(polyBar, "Num roots", TW_TYPE_INT32, &GLOBAL_polyParams.numRoots, "min=1 max=30 step=1");
-    TwAddVarRW(polyBar, "Min power", TW_TYPE_DOUBLE, &GLOBAL_polyParams.minPower, "min=1 max=10");
-    TwAddVarRW(polyBar, "Max power", TW_TYPE_DOUBLE, &GLOBAL_polyParams.maxPower, "min=1 max=10");
+    TwAddVarRW(polyBar, "Min power", TW_TYPE_DOUBLE, &GLOBAL_polyParams.minPower, "min=1 max=100");
+    TwAddVarRW(polyBar, "Max power", TW_TYPE_DOUBLE, &GLOBAL_polyParams.maxPower, "min=1 max=100");
     TwAddVarRW(polyBar, "Allow noninteger powers", TW_TYPE_BOOL8, &GLOBAL_polyParams.allowNonIntegerPowers, NULL);
     TwAddButton(polyBar, "Generate new polynomial", newPolynomialCallback, NULL, NULL);
+    TwAddVarRW(polyBar, "Draw root positions", TW_TYPE_BOOL8, &GLOBAL_drawRoots, NULL);
+
+    TwBar *dfSubBar;
+    dfSubBar = TwNewBar("dfsub");
+    TwDefine("dfsub label='Distance field swap' size='200 100' valueswidth='100' iconified=true");
+    TwAddVarRW(dfSubBar, "Use alternate distance field for i>1", TW_TYPE_BOOL8, &GLOBAL_params.dfSwapOn, NULL);
+    TwAddVarRW(dfSubBar, "Alternate distance field", TW_TYPE_CSSTRING(128), &GLOBAL_dfSwapFilename, "");
+    TwAddButton(dfSubBar, "Load alternate distance field", loadSwapFieldCallback, NULL, NULL);
+
+    TwBar *animBar;
+    animBar = TwNewBar("anim");
+    TwDefine("anim label='Export for render' size='200 100' valueswidth='100' iconified=true");
+    TwAddVarRW(animBar, "Animation filename", TW_TYPE_CSSTRING(128), &GLOBAL_animationScriptFilename, "");
+    TwAddButton(animBar, "Append frame to file", writeAnimFrameCallback, NULL, NULL);
+    TwAddSeparator(animBar, "sep1", NULL);
+    TwAddVarRW(animBar, "Params filename", TW_TYPE_CSSTRING(128), &GLOBAL_juliaParamsFilename, "");
+    TwAddButton(animBar, "Write params to file", writeParamsCallback, NULL, NULL);
 
     glutMainLoop();
 
     // Control flow will never reach here
     return EXIT_SUCCESS;
 }
-
-VEC2F findDistanceFieldCenter(const Grid2D& distField) {
-    // Descending the gradient would be a ton faster, but
-    // let's just exhaustively search for now
-
-    VEC2I minPt;
-    Real min = numeric_limits<Real>::max();
-
-    for (uint x=0; x<distField.xRes; x++) {
-        for (uint y=0; y<distField.yRes; y++) {
-            Real val = distField.get(x, y);
-            if (val < min){
-                minPt = VEC2I(x,y);
-                min = val;
-            }
-        }
-    }
-
-    return distField.getCellCenter(minPt);
-}
-
 ///////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////
 int main(int argc, char** argv) {
-    if(argc < 2 || argc > 4) {
+    if(argc < 2 || argc > 5) {
         cout << "USAGE: " << endl;
         cout << "To open an interactive visualization of a shaped Julia set from a distance field:" << endl;
-        cout << " " << argv[0] << " <distance field> <output res (optional)> <fill level (optional)>" << endl;
-        cout << "Note: A random polynomial is generated each run" << endl;
+        cout << " " << argv[0] << " <distance field> <output res (optional)> <fill level (optional)> <second distance field (optional)>" << endl;
         exit(0);
     }
 
     ArrayGrid2D *distFieldCoarse = new ArrayGrid2D((string(argv[1])));
-    distField = new InterpolationGrid2D(distFieldCoarse, InterpolationGrid2D::LINEAR);
+    distFieldCoarse->setMapBox(AABB_2D(VEC2F(-0.5,-0.5), VEC2F(0.5,0.5))); // Set to size 1, centered at origin
+    distField = new InterpolationGrid2D(distFieldCoarse, InterpolationGrid2D::LINEAR); // Interpolate
 
     // Shift the distance field so that the minimum distance is at the origin
     VEC2F dfCenter = findDistanceFieldCenter(*distField);
-    distField->mapBox.setCenter(-dfCenter); // XXX I'm not sure why this has to be negative. Something might be afoot.
+    PRINTV2(dfCenter);
+    PRINTI(distField->hasMapBox);
+    PRINTV2(distField->mapBox.min());
+    PRINTV2(distField->mapBox.max());
+
+    distField->mapBox.min() -= dfCenter;
+    distField->mapBox.max() -= dfCenter;
 
     // Compute the radius-inside relations once, at the beginning
-    GLOBAL_radInsidePercentSpacing = 0.005;
-    GLOBAL_radInsidePercents = DistanceMapInspection::samplePercentInside(*distField, 360, 10, GLOBAL_radInsidePercentSpacing);
+    GLOBAL_radInsidePercentSpacing = 0.0005;
+    GLOBAL_radInsidePercents = DistanceMapInspection::samplePercentInside(*distField, 360, 0.25, GLOBAL_radInsidePercentSpacing);
 
-    GLOBAL_radAvgDistanceSpacing = 0.005;
-    GLOBAL_radAvgDistances = DistanceMapInspection::sampleAverageDistance(*distField, 360, 1, GLOBAL_radAvgDistanceSpacing);
+    GLOBAL_radAvgDistanceSpacing = 0.0005;
+    GLOBAL_radAvgDistances = DistanceMapInspection::sampleAverageDistance(*distField, 360, 0.25, GLOBAL_radAvgDistanceSpacing);
     // dumpEvenlySpacedArrToCSV(GLOBAL_radAvgDistances, "distances.csv", GLOBAL_radAvgDistanceSpacing);
-
 
     // distField->writePPM("sdf.ppm");
 
+    newPolynomialCallback(NULL);
 
-    // Shift it up so that (0,0) is inside the object
-    // distField->mapBox.min() += VEC2F(0, 0.25);
-    // distField->mapBox.max() += VEC2F(0, 0.25);
+    if (argc > 2) GLOBAL_params.res = atoi(argv[2]);
+    if (argc > 3) GLOBAL_params.C = atof(argv[3]);
 
-    newPolynomialCallback(0);
-
-    if (argc > 2) GLOBAL_params.C = atof(argv[3]);
-    if (argc > 3) GLOBAL_params.res = atoi(argv[2]);
-
-    // GLOBAL_oldParams = GLOBAL_params;
+    if (argc > 4) {
+        strncpy(GLOBAL_dfSwapFilename, argv[4], 128);
+        GLOBAL_params.dfSwapOn = true;
+        loadSwapFieldCallback(NULL);
+    }
 
     recomputeJuliaSet();
 

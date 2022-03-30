@@ -116,6 +116,7 @@ public:
 class JuliaSet: public FieldFunction2D {
 public:
     ComplexMap* map;
+    ComplexMap* secondaryMap = 0;
     int maxIterations;
     Real escape;
 
@@ -126,11 +127,13 @@ public:
 
     JuliaOutputMode mode = LOG_MAGNITUDE;
 
-    JuliaSet(ComplexMap* map, int maxIterations=3, Real escape=20): map(map), maxIterations(maxIterations), escape(escape) {}
+    JuliaSet(ComplexMap* map, int maxIterations=3, Real escape=20): map(map), secondaryMap(0), maxIterations(maxIterations), escape(escape) {}
+    JuliaSet(ComplexMap* map1, ComplexMap* map2, int maxIterations=3, Real escape=20): map(map1), secondaryMap(map2), maxIterations(maxIterations), escape(escape) {}
 
     virtual Real getFieldValue(const VEC2F& pos) const override {
         COMPLEX iterate(pos[0], pos[1]);
 
+        // First iteration
         iterate = map->getFieldValue(iterate);
         Real magnitude = complexMagnitude(iterate);
 
@@ -138,7 +141,7 @@ public:
 
         while (magnitude < escape && totalIterations < maxIterations) {
             // Evaluate polynomial
-            iterate = map->getFieldValue(iterate);
+            iterate = (secondaryMap == 0? map : secondaryMap)->getFieldValue(iterate);
             magnitude = complexMagnitude(iterate);
 
             totalIterations++;
