@@ -3,7 +3,7 @@ LIBS =
 
 include ./projects/include.mk
 
-all: main interactive render svgToPoly polyToSDF ppmToSDF
+all: svgToPoly polyToSDF ppmToSDF main render ANTTweakBar interactive
 
 svgToPoly:
 	cd projects/svgToPoly; make
