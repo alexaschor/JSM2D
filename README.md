@@ -1,5 +1,7 @@
 # DQM2D
 
+2D version of https://github.com/alexaschor/DistQuatMap
+
 Building:
 1. `git clone https://github.com/alexaschor/DQM2D`
 2. `mkdir bin`
