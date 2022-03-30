@@ -1,5 +1,4 @@
-CXX=g++-9
-CXXFLAGS=-Wall -MMD -g -std=c++11 -fopenmp -framework GLUT -framework OpenGL -I../../lib -I../../src/ -I../../
+include ../include.mk
 
 # Additional flags for AntTweakBar library
 CXXFLAGS+= -L../../lib/AntTweakBar/lib -lAntTweakBar
