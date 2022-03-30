@@ -23,5 +23,6 @@ clean:
 
 DYLIBPATH=$(CURDIR)/../../lib/AntTweakBar/lib
 setPath:
-	export DYLD_LIBRARY_PATH=$(DYLIBPATH)
+	echo "Run the following command before running bin/interactive:"
+	export $(LD_PATH_VAR)=$(DYLIBPATH)
 

@@ -21,6 +21,9 @@ interactive:
 render:
 	cd projects/render; make
 
+ANTTweakBar:
+	cd lib/AntTweakBar/src; make -f $(ANT_MAKEFILE_NAME)
+
 clean:
 	@-for d in $(LIBS); do (echo -e "cd ./lib/$$d; rm *.o";cd ./lib/$$d; rm *.o; cd ../..); done
 	cd projects/main; make clean
@@ -29,3 +32,4 @@ clean:
 	cd projects/polyToSDF; make clean
 	cd projects/ppmToSDF; make clean
 	cd projects/svgToPoly; make clean
+	cd lib/AntTweakBar/src; make -f $(ANT_MAKEFILE_NAME) clean
