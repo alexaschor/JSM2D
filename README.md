@@ -16,6 +16,7 @@ Requires OpenGL and GLUT. `./bin/interactive` uses [ANTTweakBar](http://anttweak
 
 
 ## SDF from PPM (will flip image vertically, should be white inside shape and black everywhere else):
+Uses a ["dead reckoning"](https://www.sciencedirect.com/science/article/pii/S1077314204000682) transform, so I don't think it's exact but it works fine for this purpose.
 1. `./bin/ppmToSDF data/XXX.ppm <RESOLUTION> data/XXX.sdf`
 
 ## Generate/view a Julia set:
