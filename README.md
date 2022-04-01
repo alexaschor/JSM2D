@@ -17,9 +17,9 @@ Requires OpenGL and GLUT. `./bin/interactive` uses [ANTTweakBar](http://anttweak
 
 ## SDF from PPM (will flip image vertically, should be white inside shape and black everywhere else):
 Uses a ["dead reckoning"](https://www.sciencedirect.com/science/article/pii/S1077314204000682) transform, so I don't think it's exact but it works fine for this purpose.
-1. `./bin/ppmToSDF data/XXX.ppm <RESOLUTION> data/XXX.sdf`
+1. `./bin/ppmToSDF data/XXX.ppm <OUTPUT RESOLUTION> data/XXX.sdf`
 
 ## Generate/view a Julia set:
 1. To run `./bin/interactive`, you'll need to set your `DYLD_LIBRARY_PATH` on Mac, or `LD_LIBRARY_PATH` on Linux. `make setPath` in `projects/interactive` will generate the command you need to run before executing `./bin/interactive`
 2. `./bin/interactive data/XXX.sdf`
-3. Most of the controls are on-screen and the rest are from `fieldViewer3D`. LMB to pan, RMB and drag to zoom. N togges auto-normalizing, and arrow keys adjust scale/bias. By default there's just the one config window open, but there's a few more minimized to the bottom left of the screen.
+3. Most of the controls are on-screen and the rest are from `fieldViewer3D`. LMB to pan, RMB and drag to zoom. N togges auto-normalizing, and arrow keys adjust scale/bias. By default there's just the one config window open, but there's a few more minimized to the bottom left of the viewing window.
