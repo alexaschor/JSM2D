@@ -195,7 +195,7 @@ public:
         fclose(fp);
         delete[] pixels;
 
-        // printf("Wrote %d x %d field (%d values) to %s\n", xRes, yRes, (xRes * yRes), filename.c_str());
+        printf("Wrote %d x %d field (%d values) to %s\n", xRes, yRes, (xRes * yRes), filename.c_str());
     }
 
     // Writes to F2D file using the field bounds if the field has them, otherwise using
@@ -264,7 +264,6 @@ class ArrayGrid2D: public Grid2D {
 private:
     Real* values;
 public:
-
     // Create empty (not zeroed) field with given resolution
     ArrayGrid2D(uint xRes, uint yRes) {
         this->xRes = xRes;
@@ -498,8 +497,6 @@ public:
         setMapBox(AABB_2D(functionMin, functionMax));
 
     }
-
-
 };
 
 class VirtualGrid2D: public Grid2D {
@@ -516,7 +513,6 @@ private:
         return samplePoint;
     }
 public:
-
     VirtualGrid2D(uint xRes, uint yRes, VEC2F functionMin, VEC2F functionMax, FieldFunction2D *fieldFunction):
         fieldFunction(fieldFunction),
         functionMin(functionMin),
@@ -590,7 +586,6 @@ public:
         numMisses++;
         return result;
     }
-
 };
 
 class VirtualGrid2DLimitedCache: public VirtualGrid2DCached {
@@ -658,8 +653,6 @@ private:
         assert(false);
         return -1;
     }
-
-
 public:
     Grid2D* baseGrid;
 

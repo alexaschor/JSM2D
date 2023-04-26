@@ -58,6 +58,10 @@ VEC2F fieldMin(-1,-1);
 VEC2F fieldMax(1, 1);
 
 Grid2D *distField;
+Real GLOBAL_dfCenter_x;
+Real GLOBAL_dfCenter_y;
+VEC2F GLOBAL_dfCenter; // For shifting (dissolving) effect
+VEC2F GLOBAL_dfCenter_old; // For shifting (dissolving) effect
 
 // Kinda hacky to make this global but avoids having to use a capturing lambda std::function below
 vector<pair<Real, Real>> radiusAttractionPercents;
@@ -97,6 +101,8 @@ void dumpEvenlySpacedArrToCSV(vector<Real> vec, string filename, Real spacing) {
 typedef enum ViewMode {
     MEMBERSHIP,
     LOG_MAGNITUDE,
+    MEMBERSHIP_ALTROT,
+    LOG_MAG_ALTROT,
     DISTANCE,
     SWAP_DISTANCE,
     FIRST_ITER_RAD,
@@ -105,6 +111,7 @@ typedef enum ViewMode {
     INSIDE_RATE,
     AVG_DISTANCE,
     ROTATION,
+    ALT_ROTATION,
 } ViewMode;
 
 bool GLOBAL_liveView = true;
@@ -120,7 +127,7 @@ typedef struct JuliaParams {
     int maxIterations = 3;
     Real escape = 20;
     int res = 300;
-    ViewMode mode = LOG_MAGNITUDE;
+    ViewMode mode = MEMBERSHIP;
     bool dfSwapOn = false;
 } JuliaParams;
 
@@ -130,6 +137,11 @@ typedef struct PolyParams {
     Real maxPower = 10;
     bool allowNonIntegerPowers = false;
 } PolyParams;
+
+int GLOBAL_rootTweakIdx = 0;
+int GLOBAL_rootTweakIdxOld = 1;
+COMPLEX GLOBAL_rootTweakHome;
+VEC2F GLOBAL_rootTweakOffset;
 
 bool operator==(JuliaParams a, JuliaParams b) {
     return (
@@ -155,6 +167,9 @@ PolyParams GLOBAL_polyParams;
 JuliaParams GLOBAL_params;
 JuliaParams GLOBAL_oldParams;
 
+
+char GLOBAL_rotFieldFilename[128] = "rotfield.f2d";
+ArrayGrid2D *rotationField = 0;
 
 // Globals for ATW distfieldswap control
 char GLOBAL_dfSwapFilename[128] = "star.sdf";
@@ -243,6 +258,7 @@ VEC2F fieldSpaceToScreenSpace(VEC2F p) {
 //Forward declare
 void normalize();
 void recomputeJuliaSet(int res=-1);
+void applyDfCenter();
 void glutDisplay()
 {
 
@@ -253,6 +269,26 @@ void glutDisplay()
         if (normalized) normalize();
         GLOBAL_oldParams = GLOBAL_params;
     }
+
+    // Check if dfCenter has update
+    GLOBAL_dfCenter = VEC2F(GLOBAL_dfCenter_x, GLOBAL_dfCenter_y);
+    if (GLOBAL_dfCenter != GLOBAL_dfCenter_old) {
+        applyDfCenter();
+        recomputeJuliaSet();
+        updateViewingTexture();
+        if (normalized) normalize();
+    }
+
+    // Check polynomial tweak
+    if (GLOBAL_rootTweakIdx != GLOBAL_rootTweakIdxOld) {
+        GLOBAL_rootTweakHome = GLOBAL_params.poly.roots[GLOBAL_rootTweakIdx];
+        GLOBAL_rootTweakOffset = VEC2F(0,0);
+        GLOBAL_rootTweakIdx = GLOBAL_rootTweakIdxOld;
+    }
+
+    GLOBAL_params.poly.roots[GLOBAL_rootTweakIdx] = COMPLEX(
+        GLOBAL_rootTweakHome.real() + GLOBAL_rootTweakOffset[0],
+        GLOBAL_rootTweakHome.imag() + GLOBAL_rootTweakOffset[1]);
 
     // Make ensuing transforms affect the projection matrix
     glMatrixMode(GL_PROJECTION);
@@ -295,15 +331,22 @@ void glutDisplay()
 
     if (GLOBAL_drawRoots) {
 
+        int i=0;
         for(COMPLEX c : GLOBAL_params.poly.roots) {
             VEC2F v(real(c), imag(c));
             VEC2F vs = fieldSpaceToScreenSpace(v);
 
-            glColor3f(1, 0, 0);
+            if (i == GLOBAL_rootTweakIdx) {
+                glColor3f(1, 1, 0);
+            } else {
+                glColor3f(1, 0, 0);
+            }
             glPointSize(10);
             glBegin(GL_POINTS);
             glVertex2f(vs[0], vs[1]);
             glEnd();
+
+            i++;
         }
     }
 
@@ -446,6 +489,12 @@ void glutSpecial(int key, int x, int y) {
     }
 }
 
+void saveCurrentView() {
+    updateViewingTexture();
+    viewingField->writeF2D("snapshot.f2d", true);
+    PRINT("Saved current view to snapshot.f2d!");
+}
+
 ///////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////
 void glutKeyboard(unsigned char key, int x, int y)
@@ -475,6 +524,9 @@ void glutKeyboard(unsigned char key, int x, int y)
                 normalize();
 
             normalized = !normalized;
+            break;
+        case 's':
+            saveCurrentView();
             break;
         case '?':
             printCommands();
@@ -594,8 +646,7 @@ Real radFnSwap(VEC2F pt) {
 }
 
 
-
-void recomputeJuliaSet(int res) { //XXX default param value was given above in forward decl
+void recomputeJuliaSet(int res) { //XXX default param value of -1 was given above in forward decl
     if (cachedViewingField != 0) delete cachedViewingField;
 
     if (res == -1) res = GLOBAL_params.res;
@@ -624,6 +675,25 @@ void recomputeJuliaSet(int res) { //XXX default param value was given above in f
             originalField = cachedViewingField;
 
         }
+    }
+
+    // Julia set viewing with alternate rotField
+    if (GLOBAL_params.mode == ViewMode::LOG_MAG_ALTROT || GLOBAL_params.mode == ViewMode::MEMBERSHIP_ALTROT) {
+        // NORMAL
+        if(rotationField == 0) {
+            PRINT("No alternate rotation field loaded!");
+            return;
+        }
+
+        RotationMap2D rmap(rotationField);
+
+        DistanceGuidedMap dMap(distField, &rmap, GLOBAL_params.C, GLOBAL_params.B);
+
+        JuliaSet julia(&dMap, GLOBAL_params.maxIterations, GLOBAL_params.escape);
+        julia.mode = (GLOBAL_params.mode == MEMBERSHIP_ALTROT)? JuliaSet::SET_MEMBERSHIP: JuliaSet::LOG_MAGNITUDE;
+
+        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &julia);
+        originalField = cachedViewingField;
     }
 
     // View distance field directly
@@ -699,6 +769,18 @@ void recomputeJuliaSet(int res) { //XXX default param value was given above in f
             });
 
         cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &rotationField);
+        originalField = cachedViewingField;
+    }
+
+    // Plot the alternate loaded rotation field
+    else if (GLOBAL_params.mode == ALT_ROTATION) {
+
+        if (rotationField == 0) return;
+
+        RotationMap2D rmap(rotationField);
+        RotationField2D rf(&rmap);
+
+        cachedViewingField = new ArrayGrid2D(res, res, fieldMin, fieldMax, &rf);
         originalField = cachedViewingField;
     }
 
@@ -825,6 +907,26 @@ void TW_CALL writeParamsCallback(void *clientData) {
     out.close();
 }
 
+void TW_CALL readRotFieldCallback(void *clientData) {
+    if (rotationField != 0) delete rotationField;
+
+    rotationField = new ArrayGrid2D(GLOBAL_rotFieldFilename);
+
+    rotationField->setMapBox(AABB_2D(VEC2F(-1,-1), VEC2F(1,1)));
+}
+
+void TW_CALL copyRotFieldCallback(void *clientData) {
+    if (rotationField != 0) delete rotationField;
+
+    FieldFunction2D rotFF( [](VEC2F pt) {
+        COMPLEX out = GLOBAL_params.poly.evaluate(COMPLEX(pt[0], pt[1]));
+        VEC2F outV2 = VEC2F(real(out), imag(out));
+        return acos(outV2.dot(pt)/(outV2.norm() * pt.norm()));
+        });
+
+    rotationField = new ArrayGrid2D(GLOBAL_params.res, GLOBAL_params.res, fieldMin, fieldMax, &rotFF);
+}
+
 //////////////////////////////////////////////////////////////////////////////
 // open the GLVU window
 //////////////////////////////////////////////////////////////////////////////
@@ -862,6 +964,8 @@ int glvuWindow() {
     TwEnumVal ViewModeEV[] = {
         {MEMBERSHIP, "Set membership"},
         {LOG_MAGNITUDE, "Log magnitude"},
+        {MEMBERSHIP_ALTROT, "Set membership (alternate rotField)"},
+        {LOG_MAG_ALTROT, "Log magnitude (alternate rotField)"},
         {DISTANCE, "Signed distance field"},
         {SWAP_DISTANCE, "Secondary SDF"},
         {FIRST_ITER_RAD, "First iteration radius"},
@@ -869,14 +973,15 @@ int glvuWindow() {
         {INSIDE_RATE, "R(i+1) \% inside target"},
         {AVG_DISTANCE, "R(i+1) average distance from surface"},
         {IN_OR_OUT, "R(i+1) < R(i)?"},
-        {ROTATION, "Rotation field"}
+        {ROTATION, "Rotation field"},
+        {ALT_ROTATION, "Alternate rotation field"}
     };
-    TwType viewEnumType = TwDefineEnum("View Mode", ViewModeEV, 10);
+    TwType viewEnumType = TwDefineEnum("View Mode", ViewModeEV, 13);
 
     TwAddVarRW(juliaBar, "View mode", viewEnumType, &GLOBAL_params.mode, NULL);
     TwAddSeparator(juliaBar, "sep1", NULL);
     TwAddVarRW(juliaBar, "C", TW_TYPE_DOUBLE, &GLOBAL_params.C, "min=1 max=1000 step=1");
-    TwAddVarRW(juliaBar, "B", TW_TYPE_DOUBLE, &GLOBAL_params.B, "min=-5 max=5 step=0.01");
+    TwAddVarRW(juliaBar, "B", TW_TYPE_DOUBLE, &GLOBAL_params.B, "min=-15 max=15 step=0.01");
     TwAddVarRW(juliaBar, "Max iterations", TW_TYPE_INT32, &GLOBAL_params.maxIterations, "min=1 max=30 step=1");
     TwAddVarRW(juliaBar, "Resolution", TW_TYPE_INT32, &GLOBAL_params.res, "min=20 max=1000 step=10");
     TwAddVarRW(juliaBar, "Escape radius", TW_TYPE_DOUBLE, &GLOBAL_params.escape, "min=1 step=0.5");
@@ -897,13 +1002,20 @@ int glvuWindow() {
     TwAddVarRW(polyBar, "Allow noninteger powers", TW_TYPE_BOOL8, &GLOBAL_polyParams.allowNonIntegerPowers, NULL);
     TwAddButton(polyBar, "Generate new polynomial", newPolynomialCallback, NULL, NULL);
     TwAddVarRW(polyBar, "Draw root positions", TW_TYPE_BOOL8, &GLOBAL_drawRoots, NULL);
+    TwAddSeparator(polyBar, "sepPoly", NULL);
+    TwAddVarRW(polyBar, "Root tweak index", TW_TYPE_INT32, &GLOBAL_rootTweakIdx, "min=1 max=100");
+    TwAddVarRW(polyBar, "Root offset X", TW_TYPE_DOUBLE, &GLOBAL_rootTweakOffset.x(), "min=-2 max=2 step=0.0005");
+    TwAddVarRW(polyBar, "Root offset Y", TW_TYPE_DOUBLE, &GLOBAL_rootTweakOffset.y(), "min=-2 max=2 step=0.0005");
 
     TwBar *dfSubBar;
     dfSubBar = TwNewBar("dfsub");
-    TwDefine("dfsub label='Distance field swap' size='200 100' valueswidth='100' iconified=true");
+    TwDefine("dfsub label='Distance field parameters' size='200 100' valueswidth='100' iconified=true");
     TwAddVarRW(dfSubBar, "Use alternate distance field for i>1", TW_TYPE_BOOL8, &GLOBAL_params.dfSwapOn, NULL);
     TwAddVarRW(dfSubBar, "Alternate distance field", TW_TYPE_CSSTRING(128), &GLOBAL_dfSwapFilename, "");
     TwAddButton(dfSubBar, "Load alternate distance field", loadSwapFieldCallback, NULL, NULL);
+    TwAddSeparator(dfSubBar, "sep3", NULL);
+    TwAddVarRW(dfSubBar, "Origin Offset X", TW_TYPE_DOUBLE, &GLOBAL_dfCenter_x, "min=-5 max=5 step=0.0005");
+    TwAddVarRW(dfSubBar, "Origin Offset Y", TW_TYPE_DOUBLE, &GLOBAL_dfCenter_y, "min=-5 max=5 step=0.0005");
 
     TwBar *animBar;
     animBar = TwNewBar("anim");
@@ -914,11 +1026,26 @@ int glvuWindow() {
     TwAddVarRW(animBar, "Params filename", TW_TYPE_CSSTRING(128), &GLOBAL_juliaParamsFilename, "");
     TwAddButton(animBar, "Write params to file", writeParamsCallback, NULL, NULL);
 
+    TwBar *rotBar;
+    rotBar = TwNewBar("rotBar");
+    TwDefine("rotBar label='Rotation field' size='200 100' valueswidth='100' iconified=true");
+    TwAddVarRW(rotBar, "Rotation field input filename", TW_TYPE_CSSTRING(128), &GLOBAL_rotFieldFilename, "");
+    TwAddButton(rotBar, "Load rotation field from file", readRotFieldCallback, NULL, NULL);
+    TwAddButton(rotBar, "Copy from current rotField", copyRotFieldCallback, NULL, NULL);
+
     glutMainLoop();
 
     // Control flow will never reach here
     return EXIT_SUCCESS;
 }
+
+
+void applyDfCenter() {
+    distField->mapBox.min() = VEC2F(-0.5, -0.5) - GLOBAL_dfCenter;
+    distField->mapBox.max() = VEC2F(0.5, 0.5) - GLOBAL_dfCenter;
+    GLOBAL_dfCenter_old = GLOBAL_dfCenter;
+}
+
 ///////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////
 int main(int argc, char** argv) {
@@ -934,14 +1061,8 @@ int main(int argc, char** argv) {
     distField = new InterpolationGrid2D(distFieldCoarse, InterpolationGrid2D::LINEAR); // Interpolate
 
     // Shift the distance field so that the minimum distance is at the origin
-    VEC2F dfCenter = findDistanceFieldCenter(*distField);
-    PRINTV2(dfCenter);
-    PRINTI(distField->hasMapBox);
-    PRINTV2(distField->mapBox.min());
-    PRINTV2(distField->mapBox.max());
-
-    distField->mapBox.min() -= dfCenter;
-    distField->mapBox.max() -= dfCenter;
+    GLOBAL_dfCenter = findDistanceFieldCenter(*distField);
+    applyDfCenter();
 
     // Compute the radius-inside relations once, at the beginning
     GLOBAL_radInsidePercentSpacing = 0.0005;

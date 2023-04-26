@@ -86,6 +86,33 @@ public:
     }
 };
 
+class RotationMap2D: public ComplexMap {
+public:
+    FieldFunction2D* rotationMap;
+
+    RotationMap2D(FieldFunction2D* rotationMap): rotationMap(rotationMap) {}
+
+    virtual COMPLEX getFieldValue(COMPLEX q) const override {
+        Real angle = rotationMap->getFieldValue(VEC2F(q.real(), q.imag()));
+        return COMPLEX(cos(angle)*real(q) - sin(angle)*imag(q), sin(angle)*real(q) + cos(angle)*imag(q));
+    }
+};
+
+class RotationField2D: public FieldFunction2D {
+public:
+
+    ComplexMap *map;
+
+    RotationField2D(ComplexMap* map): map(map) {}
+
+    virtual Real getFieldValue(const VEC2F& pt) const override{
+        COMPLEX out = map->getFieldValue(COMPLEX(pt[0], pt[1]));
+        VEC2F outV2 = VEC2F(real(out), imag(out));
+        return acos(outV2.dot(pt)/(outV2.norm() * pt.norm()));
+    }
+
+};
+
 class DistanceGuidedMap: public ComplexMap {
 public:
     Grid2D* distanceField;
@@ -102,7 +129,7 @@ public:
         VEC2F qV2(real(q), imag(q));
 
         const Real distance = (*distanceField)(qV2);
-        Real radius = exp((c * distance) + b);
+        Real radius = exp((c * (distance + b)));
 
         // Evaluate polynomial
         q = p->getFieldValue(q);
