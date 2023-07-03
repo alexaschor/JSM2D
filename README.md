@@ -1,6 +1,6 @@
-# DQM2D
+# JSM2D
 
-2D version of https://github.com/alexaschor/DistQuatMap
+2D version of https://github.com/alexaschor/JuliaSetModulus
 
 ## Building:
 Requires OpenGL and GLUT. `./bin/interactive` uses [ANTTweakBar](http://anttweakbar.sourceforge.net/doc/), but that's bundled with this code and should just build with `make`.
