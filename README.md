@@ -2,7 +2,7 @@
 
 <img width="800" alt="image" src="https://github.com/alexaschor/JSM2D/assets/77604978/62d6f342-eede-4cbe-a933-80e3af296a61">
 
-2D version of https://github.com/alexaschor/JuliaSetModulus
+2D version of https://github.com/alexaschor/JuliaShapeModulus
 
 ## Building:
 Requires OpenGL and GLUT. `./bin/interactive` uses [ANTTweakBar](http://anttweakbar.sourceforge.net/doc/), but that's bundled with this code and should just build with `make`.
