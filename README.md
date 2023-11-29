@@ -2,7 +2,8 @@
 
 <img width="800" alt="image" src="https://github.com/alexaschor/JSM2D/assets/77604978/62d6f342-eede-4cbe-a933-80e3af296a61">
 
-2D version of https://github.com/alexaschor/JuliaShapeModulus
+## Note
+This is a 2D demo implementation of [alexaschor/JuliaShapeModulus](https://github.com/alexaschor/JuliaShapeModulus). For the code used to generate the examples in the paper, check out that repo.  
 
 ## Building:
 Requires OpenGL and GLUT. `./bin/interactive` uses [ANTTweakBar](http://anttweakbar.sourceforge.net/doc/), but that's bundled with this code and should just build with `make`.
